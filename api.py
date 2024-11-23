@@ -260,3 +260,67 @@ def get_top_vulnerabilities(user_id):
             'error': {'message': str(e)}
         }), 500
 
+# Add this to your api.py file
+
+@api.route('/scan', methods=['POST'])
+def trigger_repository_scan():
+    """Trigger a semgrep security scan for a repository"""
+    from app import git_integration
+    
+    # Get data from POST request body
+    request_data = request.get_json()
+    if not request_data:
+        return jsonify({
+            'success': False,
+            'error': {'message': 'Request body is required'}
+        }), 400
+    
+    # Get required parameters from request body
+    owner = request_data.get('owner')
+    repo = request_data.get('repo')
+    installation_id = request_data.get('installation_id')
+    user_id = request_data.get('user_id')
+    
+    # Validate required parameters
+    required_params = {
+        'owner': owner,
+        'repo': repo,
+        'installation_id': installation_id,
+        'user_id': user_id
+    }
+    
+    missing_params = [param for param, value in required_params.items() if not value]
+    if missing_params:
+        return jsonify({
+            'success': False,
+            'error': {'message': f'Missing required parameters: {", ".join(missing_params)}'}
+        }), 400
+
+    try:
+        # Get GitHub token
+        installation_token = git_integration.get_access_token(int(installation_id)).token
+        
+        # Construct repository URL
+        repo_url = f"https://github.com/{owner}/{repo}"
+        
+        # Use the existing scan_repository_handler
+        result = asyncio.run(scan_repository_handler(
+            repo_url=repo_url,
+            installation_token=installation_token,
+            user_id=user_id
+        ))
+        
+        if not result.get('success'):
+            return jsonify({
+                'success': False,
+                'error': result.get('error', {'message': 'Scan failed'})
+            }), 400
+            
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Scan error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': {'message': str(e)}
+        }), 500
