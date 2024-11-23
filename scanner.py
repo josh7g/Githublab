@@ -276,7 +276,7 @@ class SecurityScanner:
             cmd = [
                 "semgrep",
                 "scan",
-                "--config", "auto",
+                "--config", "p/security-audit",
                 "--json",
                 "--verbose",
                 "--metrics=on",
