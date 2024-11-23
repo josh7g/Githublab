@@ -795,32 +795,63 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     
     return scan_results
 
-def process_scan_results(raw_scan_results: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and format scan results with deduplication.
+def _process_scan_results(self, results: Dict) -> Dict:
+    """Process scan results with accurate file counting"""
+    findings = results.get('results', [])
+    stats = results.get('stats', {})
+    paths = results.get('paths', {})
     
-    Args:
-        raw_scan_results (dict): Raw scan results from the security scanner
+    processed_findings = []
+    severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0, 'WARNING': 0, 'ERROR': 0}
+    category_counts = {}
+    
+    # Get total files scanned from Semgrep stats (more accurate)
+    total_files = len(paths.get('scanned', []))  # Get actual scanned files count
+    files_with_findings = set()
+    
+    for finding in findings:
+        file_path = finding.get('path', '')
+        if file_path:
+            files_with_findings.add(file_path)
+
+        severity = finding.get('extra', {}).get('severity', 'INFO').upper()
+        category = finding.get('extra', {}).get('metadata', {}).get('category', 'security')
         
-    Returns:
-        dict: Processed and formatted scan results
-    """
-    try:
-        # First ensure we have valid results
-        if not raw_scan_results.get('success'):
-            return raw_scan_results
-            
-        # Apply deduplication
-        deduplicated_results = deduplicate_findings(raw_scan_results)
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        category_counts[category] = category_counts.get(category, 0) + 1
         
-        return deduplicated_results
-        
-    except Exception as e:
-        logger.error(f"Error processing scan results: {str(e)}")
-        return {
-            'success': False,
-            'error': {
-                'message': 'Error processing scan results',
-                'details': str(e)
+        processed_findings.append({
+            'id': finding.get('check_id'),
+            'file': file_path,
+            'line_start': finding.get('start', {}).get('line'),
+            'line_end': finding.get('end', {}).get('line'),
+            'code_snippet': finding.get('extra', {}).get('lines', ''),
+            'message': finding.get('extra', {}).get('message', ''),
+            'severity': severity,
+            'category': category,
+            'cwe': finding.get('extra', {}).get('metadata', {}).get('cwe', []),
+            'owasp': finding.get('extra', {}).get('metadata', {}).get('owasp', []),
+            'fix_recommendations': finding.get('extra', {}).get('metadata', {}).get('fix', ''),
+            'references': finding.get('extra', {}).get('metadata', {}).get('references', [])
+        })
+
+    self.scan_stats.update({
+        'total_files': total_files,                # Total files scanned by Semgrep
+        'files_processed': total_files,            # Same as total for clarity
+        'files_with_findings': len(files_with_findings),  # Files that had issues
+        'findings_count': len(processed_findings)
+    })
+
+    return {
+        'findings': processed_findings,
+        'stats': {
+            'total_findings': len(processed_findings),
+            'severity_counts': severity_counts,
+            'category_counts': category_counts,
+            'scan_stats': {
+                **self.scan_stats,
+                'total_files_scanned': total_files,
+                'files_with_findings': len(files_with_findings)
             }
         }
+    }
