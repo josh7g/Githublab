@@ -11,6 +11,7 @@ import asyncio
 import logging
 from scanner import scan_repository_handler
 from scanner import process_scan_results
+from typing import Dict, Any, List
 
 logging.basicConfig(
     level=logging.INFO,
@@ -363,6 +364,7 @@ def trigger_repository_scan():
             'success': False,
             'error': {'message': str(e)}
         }), 500
+
 
 def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     """
