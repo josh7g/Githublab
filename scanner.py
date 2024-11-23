@@ -430,7 +430,10 @@ class SecurityScanner:
                         'total_findings': scan_results.get('stats', {}).get('total_findings', 0),
                         'severity_counts': scan_results.get('stats', {}).get('severity_counts', {}),
                         'category_counts': scan_results.get('stats', {}).get('category_counts', {}),
-                        'files_scanned': self.scan_stats['files_processed'],
+                        'files_scanned': scan_results.get('stats', {}).get('scan_stats', {}).get('total_files', 0),
+                        'files_with_findings': scan_results.get('stats', {}).get('scan_stats', {}).get('files_with_findings', 0),
+                        'skipped_files': scan_results.get('stats', {}).get('scan_stats', {}).get('skipped_files', 0),
+                        'partially_scanned': scan_results.get('stats', {}).get('scan_stats', {}).get('partially_scanned', 0)
                     },
                     'metadata': {
                         'scan_duration_seconds': (
@@ -798,7 +801,7 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     return scan_results
 
 def _process_scan_results(self, results: Dict) -> Dict:
-    """Process scan results with accurate file counting"""
+    """Process scan results with accurate file counting from semgrep output"""
     findings = results.get('results', [])
     stats = results.get('stats', {})
     paths = results.get('paths', {})
@@ -807,9 +810,10 @@ def _process_scan_results(self, results: Dict) -> Dict:
     severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0, 'WARNING': 0, 'ERROR': 0}
     category_counts = {}
     
-    # Get total files scanned from Semgrep stats (more accurate)
-    total_files = len(paths.get('scanned', []))  # Get actual scanned files count
+    # Get complete scan statistics
+    total_files = stats.get('total_lines', 0)  # Total files from semgrep stats
     files_with_findings = set()
+    scanned_files = stats.get('files_with_matches', 0)
     
     for finding in findings:
         file_path = finding.get('path', '')
@@ -837,11 +841,13 @@ def _process_scan_results(self, results: Dict) -> Dict:
             'references': finding.get('extra', {}).get('metadata', {}).get('references', [])
         })
 
+    # Update scan statistics with complete information
     self.scan_stats.update({
-        'total_files': total_files,                # Total files scanned by Semgrep
-        'files_processed': total_files,            # Same as total for clarity
+        'total_files_scanned': total_files,          # Total files from semgrep
         'files_with_findings': len(files_with_findings),  # Files that had issues
-        'findings_count': len(processed_findings)
+        'findings_count': len(processed_findings),    # Total number of findings
+        'skipped_files': stats.get('skipped', {}).get('total', 0),  # Files skipped
+        'partially_scanned': stats.get('skipped', {}).get('partially_analyzed', 0)  # Partially scanned files
     })
 
     return {
@@ -852,8 +858,10 @@ def _process_scan_results(self, results: Dict) -> Dict:
             'category_counts': category_counts,
             'scan_stats': {
                 **self.scan_stats,
-                'total_files_scanned': total_files,
-                'files_with_findings': len(files_with_findings)
+                'total_files': total_files,
+                'files_with_findings': len(files_with_findings),
+                'skipped_files': stats.get('skipped', {}).get('total', 0),
+                'partially_scanned': stats.get('skipped', {}).get('partially_analyzed', 0)
             }
         }
     }
