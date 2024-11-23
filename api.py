@@ -320,8 +320,41 @@ def trigger_repository_scan():
         }), 400
 
     try:
-        # Get GitHub token
-        installation_token = git_integration.get_access_token(int(installation_id)).token
+        # Get GitHub token with error handling
+        try:
+            token_response = git_integration.get_access_token(int(installation_id))
+            if not token_response or not hasattr(token_response, 'token'):
+                raise ValueError("Failed to get valid GitHub token")
+            installation_token = token_response.token
+            logger.info(f"Successfully obtained GitHub token for installation ID: {installation_id}")
+        except Exception as token_error:
+            error_msg = f"Failed to get GitHub access token: {str(token_error)}"
+            logger.error(error_msg)
+            
+            # Store token error in database
+            try:
+                error_analysis = AnalysisResult(
+                    repository_name=f"{owner}/{repo}",
+                    user_id=user_id,
+                    status='error',
+                    error=error_msg,
+                    timestamp=datetime.utcnow()
+                )
+                db.session.add(error_analysis)
+                db.session.commit()
+            except Exception as db_e:
+                logger.error(f"Failed to store error record: {str(db_e)}")
+                db.session.rollback()
+            
+            return jsonify({
+                'success': False,
+                'error': {
+                    'message': 'GitHub authentication failed',
+                    'code': 'AUTH_ERROR',
+                    'details': str(token_error),
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+            }), 401
         
         # Create an event loop if one doesn't exist
         try:
@@ -339,14 +372,18 @@ def trigger_repository_scan():
             size_info = loop.run_until_complete(
                 scanner._check_repository_size(repo_url, installation_token)
             )
-            if not size_info['is_compatible']:
+            
+            if not size_info:
+                raise ValueError("Failed to get repository size information")
+                
+            if not size_info.get('is_compatible'):
                 return jsonify({
                     'success': False,
                     'error': {
                         'message': 'Repository too large for analysis',
                         'code': 'REPOSITORY_TOO_LARGE',
                         'details': {
-                            'size_mb': size_info['size_mb'],
+                            'size_mb': size_info.get('size_mb', 0),
                             'limit_mb': config.max_total_size_mb,
                             'recommendation': 'Consider analyzing specific directories or branches'
                         }
@@ -368,9 +405,9 @@ def trigger_repository_scan():
                     results['data'] = {}
                     
                 results['data']['repository_info'] = {
-                    'size_mb': size_info['size_mb'],
-                    'primary_language': size_info['language'],
-                    'default_branch': size_info['default_branch']
+                    'size_mb': size_info.get('size_mb', 0),
+                    'primary_language': size_info.get('language', 'unknown'),
+                    'default_branch': size_info.get('default_branch', 'main')
                 }
             
             return jsonify(results)
