@@ -368,7 +368,7 @@ def trigger_repository_scan():
 
 def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Remove duplicate findings based on file, line numbers, and vulnerability type.
+    Remove duplicate findings by comparing core attributes.
     """
     if not scan_results.get('success') or 'data' not in scan_results:
         return scan_results
@@ -378,30 +378,52 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
         return scan_results
     
     # Track unique findings
-    unique_findings = {}
+    seen = set()
+    unique_findings = []
     
     for finding in findings:
-        # Create a unique key based on multiple attributes
-        key = (
-            finding.get('file', ''),
-            finding.get('line_start', 0),
-            finding.get('line_end', 0),
-            finding.get('id', ''),  # Rule ID
-            finding.get('code_snippet', '')  # Include code snippet for more precise deduplication
+        # Create a signature using the most relevant attributes
+        signature = (
+            finding.get('file', ''),           # File path
+            finding.get('line_start', 0),      # Start line
+            finding.get('line_end', 0),        # End line
+            finding.get('code_snippet', ''),   # The actual code
+            finding.get('message', '')         # The finding message
         )
         
-        # Only keep the finding with the highest severity if there are duplicates
-        if key not in unique_findings or (
-            get_severity_weight(finding.get('severity', 'INFO')) >
-            get_severity_weight(unique_findings[key].get('severity', 'INFO'))
-        ):
-            unique_findings[key] = finding
+        # If we haven't seen this exact finding before, keep it
+        if signature not in seen:
+            seen.add(signature)
+            unique_findings.append(finding)
     
     # Update the results with deduplicated findings
-    scan_results['data']['findings'] = list(unique_findings.values())
+    original_count = len(findings)
+    new_count = len(unique_findings)
+    
+    # Count severities and categories
+    severity_counts = defaultdict(int)
+    category_counts = defaultdict(int)
+    
+    for finding in unique_findings:
+        severity_counts[finding.get('severity', 'UNKNOWN')] += 1
+        category_counts[finding.get('category', 'unknown')] += 1
+    
+    # Update scan results
+    scan_results['data']['findings'] = unique_findings
+    scan_results['data']['summary'] = {
+        'total_findings': new_count,
+        'files_scanned': scan_results['data']['summary'].get('files_scanned', 0),
+        'severity_counts': dict(severity_counts),
+        'category_counts': dict(category_counts),
+        'deduplication_info': {
+            'original_count': original_count,
+            'deduplicated_count': new_count,
+            'duplicates_removed': original_count - new_count
+        }
+    }
     
     return scan_results
-
+   
 def get_severity_weight(severity: str) -> int:
     """Get numerical weight for severity level"""
     weights = {
