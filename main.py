@@ -70,16 +70,18 @@ async def startup_event() -> None:
 
 @app.post("/api/v1/scan")
 async def scan_repository(
-    repo_url: str,
-    installation_token: str,
+    owner: str,
+    repo: str,
+    installation_id: str,
     user_id: str
 ) -> Dict[str, Any]:
     """
     Endpoint to scan a repository
     
     Args:
-        repo_url: GitHub repository URL
-        installation_token: GitHub installation token
+        owner: GitHub repository owner
+        repo: GitHub repository name
+        installation_id: GitHub installation ID
         user_id: User identifier
         
     Returns:
@@ -92,6 +94,12 @@ async def scan_repository(
         )
         
     try:
+        # Construct the repository URL
+        repo_url = f"https://github.com/{owner}/{repo}"
+        
+        # Get installation token using the installation ID
+        installation_token = app.git_integration.get_access_token(int(installation_id)).token
+        
         result = await scan_repository_handler(
             repo_url=repo_url,
             installation_token=installation_token,
