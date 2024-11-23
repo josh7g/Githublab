@@ -419,6 +419,9 @@ class SecurityScanner:
             # Run the semgrep scan
             scan_results = await self._run_semgrep_scan(repo_dir)
             
+            # Extract the complete scan statistics
+            scan_stats = scan_results.get('stats', {}).get('scan_stats', {})
+            
             return {
                 'success': True,
                 'data': {
@@ -430,10 +433,10 @@ class SecurityScanner:
                         'total_findings': scan_results.get('stats', {}).get('total_findings', 0),
                         'severity_counts': scan_results.get('stats', {}).get('severity_counts', {}),
                         'category_counts': scan_results.get('stats', {}).get('category_counts', {}),
-                        'files_scanned': scan_results.get('stats', {}).get('scan_stats', {}).get('total_files', 0),
-                        'files_with_findings': scan_results.get('stats', {}).get('scan_stats', {}).get('files_with_findings', 0),
-                        'skipped_files': scan_results.get('stats', {}).get('scan_stats', {}).get('skipped_files', 0),
-                        'partially_scanned': scan_results.get('stats', {}).get('scan_stats', {}).get('partially_scanned', 0)
+                        'files_scanned': scan_stats.get('files_scanned', 0),
+                        'files_with_findings': scan_stats.get('files_with_findings', 0),
+                        'skipped_files': scan_stats.get('skipped_files', 0),
+                        'partially_scanned': scan_stats.get('partially_scanned', 0)
                     },
                     'metadata': {
                         'scan_duration_seconds': (
@@ -443,6 +446,7 @@ class SecurityScanner:
                     }
                 }
             }
+
             
         except Exception as e:
             logger.error(f"Scan repository error: {str(e)}")
@@ -776,14 +780,16 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
         severity_counts[severity] += 1
         category_counts[category] += 1
     
-    # Preserve the original scan statistics
+    # Get the original summary while preserving scan statistics
     original_summary = scan_results['data'].get('summary', {})
     
-    # Update the scan results with dynamic counts while preserving file statistics
-    scan_results['data']['findings'] = deduplicated_findings
-    scan_results['data']['summary'] = {
+    # Create updated summary while preserving file statistics
+    updated_summary = {
         'total_findings': new_count,
-        'files_scanned': original_summary.get('files_scanned', 0),  # Preserve original count
+        'files_scanned': original_summary.get('files_scanned', 0),
+        'files_with_findings': original_summary.get('files_with_findings', 0),
+        'skipped_files': original_summary.get('skipped_files', 0),
+        'partially_scanned': original_summary.get('partially_scanned', 0),
         'severity_counts': dict(severity_counts),
         'category_counts': dict(category_counts),
         'deduplication_info': {
@@ -793,10 +799,9 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     
-    # Preserve other summary fields if they exist
-    for key in ['files_with_findings', 'skipped_files', 'partially_scanned']:
-        if key in original_summary:
-            scan_results['data']['summary'][key] = original_summary[key]
+    # Update the results
+    scan_results['data']['findings'] = deduplicated_findings
+    scan_results['data']['summary'] = updated_summary
     
     return scan_results
 
