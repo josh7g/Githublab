@@ -315,8 +315,13 @@ class SecurityScanner:
             self.scan_stats['memory_usage_mb'] = psutil.Process().memory_info().rss / (1024 * 1024)
             
             stderr_output = stderr.decode() if stderr else ""
-            if stderr_output and not stderr_output.lower().startswith('running'):
-                logger.warning(f"Semgrep stderr: {stderr_output}")
+            if stderr_output:
+                # Parse files scanned from stderr output
+                match = re.search(r"Ran \d+ rules on (\d+) files:", stderr_output)
+                if match:
+                    files_scanned = int(match.group(1))
+                    self.scan_stats['total_files'] = files_scanned
+                    self.scan_stats['files_scanned'] = files_scanned
 
             output = stdout.decode() if stdout else ""
             if not output.strip():
@@ -324,6 +329,13 @@ class SecurityScanner:
 
             try:
                 results = json.loads(output)
+                
+                # Add files scanned stats from stderr parsing
+                if 'stats' not in results:
+                    results['stats'] = {}
+                if self.scan_stats.get('files_scanned'):
+                    results['stats']['total_files'] = self.scan_stats['files_scanned']
+                
                 return self._process_scan_results(results)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse Semgrep JSON output: {str(e)}")
@@ -336,17 +348,27 @@ class SecurityScanner:
             if semgrepignore_path.exists():
                 semgrepignore_path.unlink()
 
+
+
     def _process_scan_results(self, results: Dict) -> Dict:
-        """Process scan results with accurate file counting"""
+        """Process scan results with accurate file counting from semgrep output"""
         findings = results.get('results', [])
         stats = results.get('stats', {})
+        paths = results.get('paths', {})
         
         processed_findings = []
-        severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0, 'WARNING': 0, 'ERROR': 0}
-        category_counts = {}
+        severity_counts = defaultdict(int)
+        category_counts = defaultdict(int)
         
-        # Track all files from semgrep stats
-        total_files = stats.get('total_files', 0)
+        # Get scan statistics, prioritizing self.scan_stats for files_scanned
+        files_scanned = self.scan_stats.get('files_scanned', 0) or stats.get('total_files', 0)
+        
+        # Get skipped and partially scanned files information
+        skipped = paths.get('skipped', [])
+        skipped_count = len(skipped) if skipped else 0
+        partially_scanned = len(paths.get('partially_scanned', [])) if paths else 0
+        
+        # Track files with findings
         files_with_findings = set()
         
         for finding in findings:
@@ -357,8 +379,8 @@ class SecurityScanner:
             severity = finding.get('extra', {}).get('severity', 'INFO').upper()
             category = finding.get('extra', {}).get('metadata', {}).get('category', 'security')
             
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-            category_counts[category] = category_counts.get(category, 0) + 1
+            severity_counts[severity] += 1
+            category_counts[category] += 1
             
             processed_findings.append({
                 'id': finding.get('check_id'),
@@ -375,23 +397,23 @@ class SecurityScanner:
                 'references': finding.get('extra', {}).get('metadata', {}).get('references', [])
             })
 
-        self.scan_stats.update({
-            'total_files': total_files,
-            'files_processed': len(files_with_findings),
-            'findings_count': len(processed_findings)
-        })
+        # Create complete scan stats
+        scan_stats = {
+            'total_files': files_scanned,
+            'files_scanned': files_scanned,
+            'files_with_findings': len(files_with_findings),
+            'skipped_files': skipped_count,
+            'partially_scanned': partially_scanned
+        }
 
         return {
             'findings': processed_findings,
             'stats': {
                 'total_findings': len(processed_findings),
-                'severity_counts': severity_counts,
-                'category_counts': category_counts,
-                'scan_stats': {
-                    **self.scan_stats,
-                    'total_files_scanned': total_files,
-                    'files_with_findings': len(files_with_findings)
-                }
+                'severity_counts': dict(severity_counts),
+                'category_counts': dict(category_counts),
+                'scan_stats': scan_stats,
+                'memory_usage_mb': self.scan_stats.get('memory_usage_mb', 0)
             }
         }
     def _create_empty_result(self, error: Optional[str] = None) -> Dict:
