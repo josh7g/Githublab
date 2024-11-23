@@ -599,6 +599,8 @@ def sort_findings_by_severity(findings: List[Dict]) -> List[Dict]:
         reverse=True
     )
 
+
+
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from typing import Dict, List, Optional
