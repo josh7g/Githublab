@@ -734,15 +734,7 @@ def get_analysis_findings(owner: str, repo: str):
         }), 500
     
 def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Remove duplicate findings from scan results based on multiple criteria.
-    
-    Args:
-        scan_results (dict): The original scan results containing findings and summary
-        
-    Returns:
-        dict: Deduplicated scan results with updated summary counts
-    """
+    """Remove duplicate findings from scan results based on multiple criteria."""
     if not scan_results.get('success') or 'data' not in scan_results:
         return scan_results
         
@@ -784,19 +776,27 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
         severity_counts[severity] += 1
         category_counts[category] += 1
     
-    # Update the scan results with dynamic counts
+    # Preserve the original scan statistics
+    original_summary = scan_results['data'].get('summary', {})
+    
+    # Update the scan results with dynamic counts while preserving file statistics
     scan_results['data']['findings'] = deduplicated_findings
     scan_results['data']['summary'] = {
         'total_findings': new_count,
-        'files_scanned': scan_results['data']['summary'].get('files_scanned', 0),
+        'files_scanned': original_summary.get('files_scanned', 0),  # Preserve original count
         'severity_counts': dict(severity_counts),
         'category_counts': dict(category_counts),
-        'deduplication': {
-            'original_findings': original_count,
-            'deduplicated_findings': new_count,
+        'deduplication_info': {
+            'original_count': original_count,
+            'deduplicated_count': new_count,
             'duplicates_removed': original_count - new_count
         }
     }
+    
+    # Preserve other summary fields if they exist
+    for key in ['files_with_findings', 'skipped_files', 'partially_scanned']:
+        if key in original_summary:
+            scan_results['data']['summary'][key] = original_summary[key]
     
     return scan_results
 
@@ -807,14 +807,15 @@ def _process_scan_results(self, results: Dict) -> Dict:
     paths = results.get('paths', {})
     
     processed_findings = []
-    severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0, 'WARNING': 0, 'ERROR': 0}
-    category_counts = {}
+    severity_counts = defaultdict(int)
+    category_counts = defaultdict(int)
     
     # Get complete scan statistics from semgrep output
+    total_files = stats.get('total_files', 0)
     skipped = paths.get('skipped', [])
     skipped_count = len(skipped) if skipped else 0
     scanned = paths.get('scanned', [])
-    total_scanned = len(scanned) if scanned else 0
+    total_scanned = len(scanned) if scanned else stats.get('total_files', 0)
     
     files_with_findings = set()
     
@@ -826,8 +827,8 @@ def _process_scan_results(self, results: Dict) -> Dict:
         severity = finding.get('extra', {}).get('severity', 'INFO').upper()
         category = finding.get('extra', {}).get('metadata', {}).get('category', 'security')
         
-        severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        category_counts[category] = category_counts.get(category, 0) + 1
+        severity_counts[severity] += 1
+        category_counts[category] += 1
         
         processed_findings.append({
             'id': finding.get('check_id'),
@@ -845,27 +846,21 @@ def _process_scan_results(self, results: Dict) -> Dict:
         })
 
     # Update scan statistics with complete information
-    self.scan_stats.update({
-        'total_files_scanned': total_scanned,
+    scan_stats = {
+        'total_files': total_files,
+        'files_scanned': total_scanned,
         'files_with_findings': len(files_with_findings),
-        'findings_count': len(processed_findings),
         'skipped_files': skipped_count,
         'partially_scanned': stats.get('parse_rate', {}).get('partly_parsed_files', 0)
-    })
+    }
 
     return {
         'findings': processed_findings,
         'stats': {
             'total_findings': len(processed_findings),
-            'severity_counts': severity_counts,
-            'category_counts': category_counts,
-            'scan_stats': {
-                **self.scan_stats,
-                'total_files': total_scanned + skipped_count,  # Total includes both scanned and skipped
-                'files_scanned': total_scanned,
-                'files_with_findings': len(files_with_findings),
-                'skipped_files': skipped_count,
-                'partially_scanned': stats.get('parse_rate', {}).get('partly_parsed_files', 0)
-            }
+            'severity_counts': dict(severity_counts),
+            'category_counts': dict(category_counts),
+            'scan_stats': scan_stats,
+            'memory_usage_mb': self.scan_stats.get('memory_usage_mb', 0)
         }
     }
