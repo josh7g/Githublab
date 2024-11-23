@@ -12,6 +12,11 @@ import logging
 from scanner import scan_repository_handler
 from scanner import scan_repository_handler, deduplicate_findings
 from typing import Dict, Any, List
+from datetime import datetime
+from scanner import SecurityScanner, ScanConfig
+import git
+
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -456,4 +461,3 @@ def trigger_repository_scan():
                 'timestamp': datetime.utcnow().isoformat()
             }
         }), 500
-
