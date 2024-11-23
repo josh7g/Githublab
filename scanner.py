@@ -419,8 +419,9 @@ class SecurityScanner:
             # Run the semgrep scan
             scan_results = await self._run_semgrep_scan(repo_dir)
             
-            # Extract the complete scan statistics
-            scan_stats = scan_results.get('stats', {}).get('scan_stats', {})
+            # Get the complete scan statistics
+            stats = scan_results.get('stats', {})
+            scan_stats = stats.get('scan_stats', {})
             
             return {
                 'success': True,
@@ -430,9 +431,9 @@ class SecurityScanner:
                     'timestamp': datetime.now().isoformat(),
                     'findings': scan_results.get('findings', []),
                     'summary': {
-                        'total_findings': scan_results.get('stats', {}).get('total_findings', 0),
-                        'severity_counts': scan_results.get('stats', {}).get('severity_counts', {}),
-                        'category_counts': scan_results.get('stats', {}).get('category_counts', {}),
+                        'total_findings': stats.get('total_findings', 0),
+                        'severity_counts': stats.get('severity_counts', {}),
+                        'category_counts': stats.get('category_counts', {}),
                         'files_scanned': scan_stats.get('files_scanned', 0),
                         'files_with_findings': scan_stats.get('files_with_findings', 0),
                         'skipped_files': scan_stats.get('skipped_files', 0),
@@ -442,7 +443,7 @@ class SecurityScanner:
                         'scan_duration_seconds': (
                             datetime.now() - self.scan_stats['start_time']
                         ).total_seconds() if self.scan_stats['start_time'] else 0,
-                        'memory_usage_mb': scan_results.get('stats', {}).get('memory_usage_mb', 0)
+                        'memory_usage_mb': stats.get('memory_usage_mb', 0)
                     }
                 }
             }
@@ -741,17 +742,18 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     """Remove duplicate findings from scan results based on multiple criteria."""
     if not scan_results.get('success') or 'data' not in scan_results:
         return scan_results
-        
+
+    original_summary = scan_results['data'].get('summary', {})
     findings = scan_results['data'].get('findings', [])
+    
     if not findings:
         return scan_results
-        
-    # Track seen findings using a set of tuples containing key attributes
+    
+    # Track seen findings
     seen_findings = set()
     deduplicated_findings = []
     
     for finding in findings:
-        # Create a unique signature for each finding
         finding_signature = (
             finding.get('file', ''),
             finding.get('line_start', 0),
@@ -765,27 +767,19 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
             seen_findings.add(finding_signature)
             deduplicated_findings.append(finding)
     
-    # Update findings count
-    original_count = len(findings)
-    new_count = len(deduplicated_findings)
-    
-    # Use defaultdict for counting to handle any severity level
+    # Count findings
     severity_counts = defaultdict(int)
     category_counts = defaultdict(int)
     
-    # Count findings by severity and category
     for finding in deduplicated_findings:
         severity = finding.get('severity', 'UNKNOWN')
         category = finding.get('category', 'unknown')
         severity_counts[severity] += 1
         category_counts[category] += 1
     
-    # Get the original summary while preserving scan statistics
-    original_summary = scan_results['data'].get('summary', {})
-    
-    # Create updated summary while preserving file statistics
+    # Create updated summary while preserving scan statistics
     updated_summary = {
-        'total_findings': new_count,
+        'total_findings': len(deduplicated_findings),
         'files_scanned': original_summary.get('files_scanned', 0),
         'files_with_findings': original_summary.get('files_with_findings', 0),
         'skipped_files': original_summary.get('skipped_files', 0),
@@ -793,13 +787,12 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
         'severity_counts': dict(severity_counts),
         'category_counts': dict(category_counts),
         'deduplication_info': {
-            'original_count': original_count,
-            'deduplicated_count': new_count,
-            'duplicates_removed': original_count - new_count
+            'original_count': len(findings),
+            'deduplicated_count': len(deduplicated_findings),
+            'duplicates_removed': len(findings) - len(deduplicated_findings)
         }
     }
     
-    # Update the results
     scan_results['data']['findings'] = deduplicated_findings
     scan_results['data']['summary'] = updated_summary
     
@@ -810,18 +803,26 @@ def _process_scan_results(self, results: Dict) -> Dict:
     findings = results.get('results', [])
     stats = results.get('stats', {})
     paths = results.get('paths', {})
+    parse_metrics = results.get('parse_metrics', {})
     
     processed_findings = []
     severity_counts = defaultdict(int)
     category_counts = defaultdict(int)
     
-    # Get complete scan statistics from semgrep output
-    total_files = stats.get('total_files', 0)
+    # Extract stats directly from semgrep output
+    total_files = stats.get('total', {}).get('files', 0)  # Get total files from stats
+    if not total_files:  # Fallback to scanning status
+        total_files = stats.get('total_files', 0)
+    
+    # Get skipped and scanned files information
     skipped = paths.get('skipped', [])
     skipped_count = len(skipped) if skipped else 0
-    scanned = paths.get('scanned', [])
-    total_scanned = len(scanned) if scanned else stats.get('total_files', 0)
     
+    # Get scanned files count
+    scanned = paths.get('scanned', [])
+    files_scanned = len(scanned) if scanned else total_files - skipped_count
+    
+    # Track files with findings
     files_with_findings = set()
     
     for finding in findings:
@@ -850,15 +851,16 @@ def _process_scan_results(self, results: Dict) -> Dict:
             'references': finding.get('extra', {}).get('metadata', {}).get('references', [])
         })
 
-    # Update scan statistics with complete information
+    # Update complete scan statistics
     scan_stats = {
         'total_files': total_files,
-        'files_scanned': total_scanned,
+        'files_scanned': files_scanned,
         'files_with_findings': len(files_with_findings),
         'skipped_files': skipped_count,
-        'partially_scanned': stats.get('parse_rate', {}).get('partly_parsed_files', 0)
+        'partially_scanned': parse_metrics.get('partially_parsed_files', 0)
     }
 
+    # Return complete results structure
     return {
         'findings': processed_findings,
         'stats': {
