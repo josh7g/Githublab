@@ -368,7 +368,7 @@ def trigger_repository_scan():
 
 def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Remove duplicate findings by comparing core attributes.
+    Remove duplicate findings using a simpler signature based on file location and code.
     """
     if not scan_results.get('success') or 'data' not in scan_results:
         return scan_results
@@ -382,13 +382,11 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     unique_findings = []
     
     for finding in findings:
-        # Create a signature using the most relevant attributes
+        # Create a simpler signature focusing on where the issue is
         signature = (
-            finding.get('file', ''),           # File path
-            finding.get('line_start', 0),      # Start line
-            finding.get('line_end', 0),        # End line
-            finding.get('code_snippet', ''),   # The actual code
-            finding.get('message', '')         # The finding message
+            finding.get('file', ''),           # Which file
+            finding.get('line_start', 0),      # Which line
+            finding.get('code_snippet', '')    # What code has the issue
         )
         
         # If we haven't seen this exact finding before, keep it
@@ -405,8 +403,10 @@ def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
     category_counts = defaultdict(int)
     
     for finding in unique_findings:
-        severity_counts[finding.get('severity', 'UNKNOWN')] += 1
-        category_counts[finding.get('category', 'unknown')] += 1
+        severity = finding.get('severity', 'UNKNOWN')
+        category = finding.get('category', 'unknown')
+        severity_counts[severity] += 1
+        category_counts[category] += 1
     
     # Update scan results
     scan_results['data']['findings'] = unique_findings
