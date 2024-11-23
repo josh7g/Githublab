@@ -281,18 +281,13 @@ class SecurityScanner:
                 "--json",
                 "--verbose",
                 "--metrics=on",
-                
-                # Resource limits
                 f"--max-memory={self.config.max_memory_mb}",
                 f"--jobs={self.config.concurrent_processes}",
                 f"--timeout={self.config.file_timeout_seconds}",
                 f"--timeout-threshold={self.config.max_retries}",
-                
-                # Optimization flags
                 "--no-git-ignore",
                 "--skip-unknown-extensions",
                 "--optimizations=all",
-                
                 str(target_dir)
             ]
 
@@ -317,13 +312,15 @@ class SecurityScanner:
             
             stderr_output = stderr.decode() if stderr else ""
             if stderr_output:
-                # Parse files scanned from stderr output
+                # Log the entire stderr output
+                logger.warning(f"Semgrep stderr: {stderr_output}")
+                
+                # Quietly parse the stats
                 match = re.search(r"Ran \d+ rules on (\d+) files:", stderr_output)
                 if match:
                     files_scanned = int(match.group(1))
                     self.scan_stats['total_files'] = files_scanned
                     self.scan_stats['files_scanned'] = files_scanned
-                    logger.info(f"Extracted files scanned count from semgrep output: {files_scanned}")
 
             output = stdout.decode() if stdout else ""
             if not output.strip():
