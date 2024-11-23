@@ -7,6 +7,9 @@ import logging
 from pathlib import Path
 from github import Github
 from github import GithubIntegration
+import asyncio
+import logging
+from scanner import scan_repository_handler
 
 
 logging.basicConfig(
@@ -303,8 +306,15 @@ def trigger_repository_scan():
         # Construct repository URL
         repo_url = f"https://github.com/{owner}/{repo}"
         
-        # Use the existing scan_repository_handler
-        result = asyncio.run(scan_repository_handler(
+        # Create an event loop if one doesn't exist
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        # Use the event loop to run the scan
+        result = loop.run_until_complete(scan_repository_handler(
             repo_url=repo_url,
             installation_token=installation_token,
             user_id=user_id
