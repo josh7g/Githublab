@@ -430,56 +430,116 @@ class SecurityScanner:
             'errors': [error] if error else []
         }
 
-    async def scan_repository(self, repo_url: str, installation_token: str, user_id: str) -> Dict:
-        """Main method to scan a repository with comprehensive error handling"""
-        try:
-            # Clone the repository
-            repo_dir = await self._clone_repository(repo_url, installation_token)
-            
-            # Run the semgrep scan
-            scan_results = await self._run_semgrep_scan(repo_dir)
-            
-            # Get the complete scan statistics
-            stats = scan_results.get('stats', {})
-            scan_stats = stats.get('scan_stats', {})
-            
-            return {
-                'success': True,
-                'data': {
-                    'repository': repo_url,
-                    'user_id': user_id,
-                    'timestamp': datetime.now().isoformat(),
-                    'findings': scan_results.get('findings', []),
-                    'summary': {
-                        'total_findings': stats.get('total_findings', 0),
-                        'severity_counts': stats.get('severity_counts', {}),
-                        'category_counts': stats.get('category_counts', {}),
-                        'files_scanned': scan_stats.get('files_scanned', 0),
-                        'files_with_findings': scan_stats.get('files_with_findings', 0),
-                        'skipped_files': scan_stats.get('skipped_files', 0),
-                        'partially_scanned': scan_stats.get('partially_scanned', 0)
-                    },
-                    'metadata': {
-                        'scan_duration_seconds': (
-                            datetime.now() - self.scan_stats['start_time']
-                        ).total_seconds() if self.scan_stats['start_time'] else 0,
-                        'memory_usage_mb': stats.get('memory_usage_mb', 0)
-                    }
-                }
-            }
+    # In scanner.py, update the scan_repository method:
 
-            
-        except Exception as e:
-            logger.error(f"Scan repository error: {str(e)}")
-            return {
-                'success': False,
-                'error': {
-                    'message': str(e),
-                    'code': 'SCAN_ERROR',
-                    'type': type(e).__name__,
-                    'timestamp': datetime.now().isoformat()
-                }
+async def scan_repository(self, repo_url: str, installation_token: str, user_id: str) -> Dict:
+    """Main method to scan a repository with comprehensive error handling"""
+    try:
+        # Clone the repository
+        repo_dir = await self._clone_repository(repo_url, installation_token)
+        
+        # Run the semgrep scan
+        scan_results = await self._run_semgrep_scan(repo_dir)
+        
+        # Extract repository name from URL
+        repo_name = repo_url.split('github.com/')[-1].rstrip('.git')
+        
+        # Prepare results for storage
+        results_data = {
+            'findings': scan_results.get('findings', []),
+            'stats': scan_results.get('stats', {}),
+            'metadata': {
+                'scan_duration_seconds': (
+                    datetime.now() - self.scan_stats['start_time']
+                ).total_seconds() if self.scan_stats['start_time'] else 0,
+                'memory_usage_mb': scan_results.get('stats', {}).get('memory_usage_mb', 0)
+            },
+            'summary': {
+                'total_findings': scan_results.get('stats', {}).get('total_findings', 0),
+                'severity_counts': scan_results.get('stats', {}).get('severity_counts', {}),
+                'category_counts': scan_results.get('stats', {}).get('category_counts', {}),
+                'files_scanned': scan_results.get('stats', {}).get('scan_stats', {}).get('files_scanned', 0),
+                'files_with_findings': scan_results.get('stats', {}).get('scan_stats', {}).get('files_with_findings', 0),
+                'skipped_files': scan_results.get('stats', {}).get('scan_stats', {}).get('skipped_files', 0),
+                'partially_scanned': scan_results.get('stats', {}).get('scan_stats', {}).get('partially_scanned', 0)
             }
+        }
+        
+        # Store in database
+        if self.db_session:
+            try:
+                analysis = AnalysisResult(
+                    repository_name=repo_name,
+                    user_id=user_id,
+                    status='completed',
+                    results=results_data,
+                    timestamp=datetime.utcnow()
+                )
+                
+                self.db_session.add(analysis)
+                self.db_session.commit()
+                logger.info(f"Stored analysis results in database with ID: {analysis.id}")
+                
+            except Exception as e:
+                self.db_session.rollback()
+                logger.error(f"Failed to store analysis results in database: {str(e)}")
+                
+                # Create error record
+                try:
+                    error_analysis = AnalysisResult(
+                        repository_name=repo_name,
+                        user_id=user_id,
+                        status='error',
+                        error=str(e),
+                        timestamp=datetime.utcnow()
+                    )
+                    self.db_session.add(error_analysis)
+                    self.db_session.commit()
+                except Exception as db_e:
+                    logger.error(f"Failed to store error record: {str(db_e)}")
+                    self.db_session.rollback()
+        
+        # Return API response
+        return {
+            'success': True,
+            'data': {
+                'repository': repo_url,
+                'user_id': user_id,
+                'timestamp': datetime.now().isoformat(),
+                'findings': scan_results.get('findings', []),
+                'summary': results_data['summary'],
+                'metadata': results_data['metadata']
+            }
+        }
+            
+    except Exception as e:
+        logger.error(f"Scan repository error: {str(e)}")
+        
+        # Store error in database
+        if self.db_session:
+            try:
+                error_analysis = AnalysisResult(
+                    repository_name=repo_url.split('github.com/')[-1].rstrip('.git'),
+                    user_id=user_id,
+                    status='error',
+                    error=str(e),
+                    timestamp=datetime.utcnow()
+                )
+                self.db_session.add(error_analysis)
+                self.db_session.commit()
+            except Exception as db_e:
+                logger.error(f"Failed to store error record: {str(db_e)}")
+                self.db_session.rollback()
+        
+        return {
+            'success': False,
+            'error': {
+                'message': str(e),
+                'code': 'SCAN_ERROR',
+                'type': type(e).__name__,
+                'timestamp': datetime.now().isoformat()
+            }
+        }
 
 
 async def scan_repository_handler(

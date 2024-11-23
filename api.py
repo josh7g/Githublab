@@ -264,12 +264,12 @@ def get_top_vulnerabilities(user_id):
             'error': {'message': str(e)}
         }), 500
 
-# Add this to your api.py file
+
 
 @api.route('/scan', methods=['POST'])
 def trigger_repository_scan():
     """Trigger a semgrep security scan for a repository with deduplication"""
-    from app import git_integration
+    from app import git_integration, db
     
     # Get data from POST request body
     request_data = request.get_json()
@@ -297,15 +297,26 @@ def trigger_repository_scan():
     if missing_params:
         return jsonify({
             'success': False,
-            'error': {'message': f'Missing required parameters: {", ".join(missing_params)}'}
+            'error': {
+                'message': f'Missing required parameters: {", ".join(missing_params)}',
+                'code': 'INVALID_PARAMETERS'
+            }
+        }), 400
+
+    repo_url = f"https://github.com/{owner}/{repo}"
+    if not repo_url.startswith(('https://github.com/', 'git@github.com:')):
+        return jsonify({
+            'success': False,
+            'error': {
+                'message': 'Invalid repository URL format',
+                'code': 'INVALID_REPOSITORY_URL',
+                'details': 'Only GitHub repositories are supported'
+            }
         }), 400
 
     try:
         # Get GitHub token
         installation_token = git_integration.get_access_token(int(installation_id)).token
-        
-        # Construct repository URL
-        repo_url = f"https://github.com/{owner}/{repo}"
         
         # Create an event loop if one doesn't exist
         try:
@@ -313,56 +324,136 @@ def trigger_repository_scan():
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
-        # Use the event loop to run the scan
-        raw_results = loop.run_until_complete(scan_repository_handler(
-            repo_url=repo_url,
-            installation_token=installation_token,
-            user_id=user_id
-        ))
         
-        if not raw_results.get('success'):
+        # Initialize scanner with config and db session
+        config = ScanConfig()
+        scanner = SecurityScanner(config=config, db_session=db.session)
+        
+        try:
+            # Pre-check repository size
+            size_info = loop.run_until_complete(
+                scanner._check_repository_size(repo_url, installation_token)
+            )
+            if not size_info['is_compatible']:
+                return jsonify({
+                    'success': False,
+                    'error': {
+                        'message': 'Repository too large for analysis',
+                        'code': 'REPOSITORY_TOO_LARGE',
+                        'details': {
+                            'size_mb': size_info['size_mb'],
+                            'limit_mb': config.max_total_size_mb,
+                            'recommendation': 'Consider analyzing specific directories or branches'
+                        }
+                    }
+                }), 400
+            
+            # Run the scan
+            results = loop.run_until_complete(
+                scanner.scan_repository(
+                    repo_url=repo_url,
+                    installation_token=installation_token,
+                    user_id=user_id
+                )
+            )
+            
+            # Add repository metadata to results if scan was successful
+            if results.get('success'):
+                if 'data' not in results:
+                    results['data'] = {}
+                    
+                results['data']['repository_info'] = {
+                    'size_mb': size_info['size_mb'],
+                    'primary_language': size_info['language'],
+                    'default_branch': size_info['default_branch']
+                }
+            
+            return jsonify(results)
+
+        except ValueError as ve:
+            error_msg = str(ve)
+            logger.error(f"Validation error: {error_msg}")
+            
+            # Store error in database
+            try:
+                error_analysis = AnalysisResult(
+                    repository_name=f"{owner}/{repo}",
+                    user_id=user_id,
+                    status='error',
+                    error=error_msg,
+                    timestamp=datetime.utcnow()
+                )
+                db.session.add(error_analysis)
+                db.session.commit()
+            except Exception as db_e:
+                logger.error(f"Failed to store error record: {str(db_e)}")
+                db.session.rollback()
+            
             return jsonify({
                 'success': False,
-                'error': raw_results.get('error', {'message': 'Scan failed'})
-            }), 400
-        
-        # Process and deduplicate results
-        processed_results = deduplicate_findings(raw_results)
-        
-        # Update the summary section with deduplicated counts
-        if processed_results.get('success') and 'data' in processed_results:
-            findings = processed_results['data'].get('findings', [])
-            
-            # Build dynamic severity and category counts
-            severity_counts = defaultdict(int)
-            category_counts = defaultdict(int)
-            
-            for finding in findings:
-                severity = finding.get('severity', 'UNKNOWN')
-                category = finding.get('category', 'unknown')
-                severity_counts[severity] += 1
-                category_counts[category] += 1
-            
-            # Update summary with actual counts
-            processed_results['data']['summary'].update({
-                'total_findings': len(findings),
-                'severity_counts': dict(severity_counts),
-                'category_counts': dict(category_counts),
-                'deduplication_info': {
-                    'original_count': len(raw_results['data'].get('findings', [])),
-                    'deduplicated_count': len(findings),
-                    'duplicates_removed': len(raw_results['data'].get('findings', [])) - len(findings)
+                'error': {
+                    'message': error_msg,
+                    'code': 'VALIDATION_ERROR',
+                    'timestamp': datetime.utcnow().isoformat()
                 }
-            })
+            }), 400
             
-        return jsonify(processed_results)
+        except git.GitCommandError as ge:
+            error_msg = f"Git operation failed: {str(ge)}"
+            logger.error(error_msg)
+            
+            # Store error in database
+            try:
+                error_analysis = AnalysisResult(
+                    repository_name=f"{owner}/{repo}",
+                    user_id=user_id,
+                    status='error',
+                    error=error_msg,
+                    timestamp=datetime.utcnow()
+                )
+                db.session.add(error_analysis)
+                db.session.commit()
+            except Exception as db_e:
+                logger.error(f"Failed to store error record: {str(db_e)}")
+                db.session.rollback()
+            
+            return jsonify({
+                'success': False,
+                'error': {
+                    'message': 'Git operation failed',
+                    'code': 'GIT_ERROR',
+                    'details': str(ge),
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+            }), 400
 
     except Exception as e:
-        logger.error(f"Scan error: {str(e)}")
+        error_msg = f"Unexpected error in scan handler: {str(e)}"
+        logger.error(error_msg)
+        
+        # Store error in database
+        try:
+            error_analysis = AnalysisResult(
+                repository_name=f"{owner}/{repo}",
+                user_id=user_id,
+                status='error',
+                error=error_msg,
+                timestamp=datetime.utcnow()
+            )
+            db.session.add(error_analysis)
+            db.session.commit()
+        except Exception as db_e:
+            logger.error(f"Failed to store error record: {str(db_e)}")
+            db.session.rollback()
+        
         return jsonify({
             'success': False,
-            'error': {'message': str(e)}
+            'error': {
+                'message': 'Unexpected error in scan handler',
+                'code': 'INTERNAL_ERROR',
+                'details': str(e),
+                'type': type(e).__name__,
+                'timestamp': datetime.utcnow().isoformat()
+            }
         }), 500
-
 
