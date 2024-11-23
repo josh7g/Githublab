@@ -10,7 +10,7 @@ from github import GithubIntegration
 import asyncio
 import logging
 from scanner import scan_repository_handler
-
+from scanner import process_scan_results
 
 logging.basicConfig(
     level=logging.INFO,

@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy.orm import Session
+from typing import Dict, Any
+from collections import defaultdict
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -725,3 +728,99 @@ def get_analysis_findings(owner: str, repo: str):
             }
         }), 500
     
+def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Remove duplicate findings from scan results based on multiple criteria.
+    
+    Args:
+        scan_results (dict): The original scan results containing findings and summary
+        
+    Returns:
+        dict: Deduplicated scan results with updated summary counts
+    """
+    if not scan_results.get('success') or 'data' not in scan_results:
+        return scan_results
+        
+    findings = scan_results['data'].get('findings', [])
+    if not findings:
+        return scan_results
+        
+    # Track seen findings using a set of tuples containing key attributes
+    seen_findings = set()
+    deduplicated_findings = []
+    
+    for finding in findings:
+        # Create a unique signature for each finding
+        finding_signature = (
+            finding.get('file', ''),
+            finding.get('line_start', 0),
+            finding.get('line_end', 0),
+            finding.get('category', ''),
+            finding.get('severity', ''),
+            finding.get('code_snippet', '')
+        )
+        
+        if finding_signature not in seen_findings:
+            seen_findings.add(finding_signature)
+            deduplicated_findings.append(finding)
+    
+    # Update findings count
+    original_count = len(findings)
+    new_count = len(deduplicated_findings)
+    
+    # Use defaultdict for counting to handle any severity level
+    severity_counts = defaultdict(int)
+    category_counts = defaultdict(int)
+    
+    # Count findings by severity and category
+    for finding in deduplicated_findings:
+        severity = finding.get('severity', 'UNKNOWN')
+        category = finding.get('category', 'unknown')
+        severity_counts[severity] += 1
+        category_counts[category] += 1
+    
+    # Update the scan results with dynamic counts
+    scan_results['data']['findings'] = deduplicated_findings
+    scan_results['data']['summary'] = {
+        'total_findings': new_count,
+        'files_scanned': scan_results['data']['summary'].get('files_scanned', 0),
+        'severity_counts': dict(severity_counts),
+        'category_counts': dict(category_counts),
+        'deduplication': {
+            'original_findings': original_count,
+            'deduplicated_findings': new_count,
+            'duplicates_removed': original_count - new_count
+        }
+    }
+    
+    return scan_results
+
+def process_scan_results(raw_scan_results: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and format scan results with deduplication.
+    
+    Args:
+        raw_scan_results (dict): Raw scan results from the security scanner
+        
+    Returns:
+        dict: Processed and formatted scan results
+    """
+    try:
+        # First ensure we have valid results
+        if not raw_scan_results.get('success'):
+            return raw_scan_results
+            
+        # Apply deduplication
+        deduplicated_results = deduplicate_findings(raw_scan_results)
+        
+        return deduplicated_results
+        
+    except Exception as e:
+        logger.error(f"Error processing scan results: {str(e)}")
+        return {
+            'success': False,
+            'error': {
+                'message': 'Error processing scan results',
+                'details': str(e)
+            }
+        }
