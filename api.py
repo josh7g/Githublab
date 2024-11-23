@@ -267,7 +267,7 @@ def get_top_vulnerabilities(user_id):
 
 @api.route('/scan', methods=['POST'])
 def trigger_repository_scan():
-    """Trigger a semgrep security scan for a repository"""
+    """Trigger a semgrep security scan for a repository with deduplication"""
     from app import git_integration
     
     # Get data from POST request body
@@ -314,19 +314,48 @@ def trigger_repository_scan():
             asyncio.set_event_loop(loop)
             
         # Use the event loop to run the scan
-        result = loop.run_until_complete(scan_repository_handler(
+        raw_results = loop.run_until_complete(scan_repository_handler(
             repo_url=repo_url,
             installation_token=installation_token,
             user_id=user_id
         ))
         
-        if not result.get('success'):
+        if not raw_results.get('success'):
             return jsonify({
                 'success': False,
-                'error': result.get('error', {'message': 'Scan failed'})
+                'error': raw_results.get('error', {'message': 'Scan failed'})
             }), 400
+        
+        # Process and deduplicate results
+        processed_results = deduplicate_findings(raw_results)
+        
+        # Update the summary section with deduplicated counts
+        if processed_results.get('success') and 'data' in processed_results:
+            findings = processed_results['data'].get('findings', [])
             
-        return jsonify(result)
+            # Build dynamic severity and category counts
+            severity_counts = defaultdict(int)
+            category_counts = defaultdict(int)
+            
+            for finding in findings:
+                severity = finding.get('severity', 'UNKNOWN')
+                category = finding.get('category', 'unknown')
+                severity_counts[severity] += 1
+                category_counts[category] += 1
+            
+            # Update summary with actual counts
+            processed_results['data']['summary'].update({
+                'total_findings': len(findings),
+                'severity_counts': dict(severity_counts),
+                'category_counts': dict(category_counts),
+                'deduplication_info': {
+                    'original_count': len(raw_results['data'].get('findings', [])),
+                    'deduplicated_count': len(findings),
+                    'duplicates_removed': len(raw_results['data'].get('findings', [])) - len(findings)
+                }
+            })
+            
+        return jsonify(processed_results)
 
     except Exception as e:
         logger.error(f"Scan error: {str(e)}")
@@ -334,3 +363,49 @@ def trigger_repository_scan():
             'success': False,
             'error': {'message': str(e)}
         }), 500
+
+def deduplicate_findings(scan_results: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Remove duplicate findings based on file, line numbers, and vulnerability type.
+    """
+    if not scan_results.get('success') or 'data' not in scan_results:
+        return scan_results
+    
+    findings = scan_results['data'].get('findings', [])
+    if not findings:
+        return scan_results
+    
+    # Track unique findings
+    unique_findings = {}
+    
+    for finding in findings:
+        # Create a unique key based on multiple attributes
+        key = (
+            finding.get('file', ''),
+            finding.get('line_start', 0),
+            finding.get('line_end', 0),
+            finding.get('id', ''),  # Rule ID
+            finding.get('code_snippet', '')  # Include code snippet for more precise deduplication
+        )
+        
+        # Only keep the finding with the highest severity if there are duplicates
+        if key not in unique_findings or (
+            get_severity_weight(finding.get('severity', 'INFO')) >
+            get_severity_weight(unique_findings[key].get('severity', 'INFO'))
+        ):
+            unique_findings[key] = finding
+    
+    # Update the results with deduplicated findings
+    scan_results['data']['findings'] = list(unique_findings.values())
+    
+    return scan_results
+
+def get_severity_weight(severity: str) -> int:
+    """Get numerical weight for severity level"""
+    weights = {
+        'ERROR': 5,
+        'WARNING': 4,
+        'INFO': 3,
+        'UNKNOWN': 0
+    }
+    return weights.get(severity.upper(), 0)
