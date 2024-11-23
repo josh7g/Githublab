@@ -810,10 +810,13 @@ def _process_scan_results(self, results: Dict) -> Dict:
     severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0, 'INFO': 0, 'WARNING': 0, 'ERROR': 0}
     category_counts = {}
     
-    # Get complete scan statistics
-    total_files = stats.get('total_lines', 0)  # Total files from semgrep stats
+    # Get complete scan statistics from semgrep output
+    skipped = paths.get('skipped', [])
+    skipped_count = len(skipped) if skipped else 0
+    scanned = paths.get('scanned', [])
+    total_scanned = len(scanned) if scanned else 0
+    
     files_with_findings = set()
-    scanned_files = stats.get('files_with_matches', 0)
     
     for finding in findings:
         file_path = finding.get('path', '')
@@ -843,11 +846,11 @@ def _process_scan_results(self, results: Dict) -> Dict:
 
     # Update scan statistics with complete information
     self.scan_stats.update({
-        'total_files_scanned': total_files,          # Total files from semgrep
-        'files_with_findings': len(files_with_findings),  # Files that had issues
-        'findings_count': len(processed_findings),    # Total number of findings
-        'skipped_files': stats.get('skipped', {}).get('total', 0),  # Files skipped
-        'partially_scanned': stats.get('skipped', {}).get('partially_analyzed', 0)  # Partially scanned files
+        'total_files_scanned': total_scanned,
+        'files_with_findings': len(files_with_findings),
+        'findings_count': len(processed_findings),
+        'skipped_files': skipped_count,
+        'partially_scanned': stats.get('parse_rate', {}).get('partly_parsed_files', 0)
     })
 
     return {
@@ -858,10 +861,11 @@ def _process_scan_results(self, results: Dict) -> Dict:
             'category_counts': category_counts,
             'scan_stats': {
                 **self.scan_stats,
-                'total_files': total_files,
+                'total_files': total_scanned + skipped_count,  # Total includes both scanned and skipped
+                'files_scanned': total_scanned,
                 'files_with_findings': len(files_with_findings),
-                'skipped_files': stats.get('skipped', {}).get('total', 0),
-                'partially_scanned': stats.get('skipped', {}).get('partially_analyzed', 0)
+                'skipped_files': skipped_count,
+                'partially_scanned': stats.get('parse_rate', {}).get('partly_parsed_files', 0)
             }
         }
     }
