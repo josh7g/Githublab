@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 from typing import Dict, Any
 from collections import defaultdict
+import re
 
 
 logging.basicConfig(
@@ -322,6 +323,7 @@ class SecurityScanner:
                     files_scanned = int(match.group(1))
                     self.scan_stats['total_files'] = files_scanned
                     self.scan_stats['files_scanned'] = files_scanned
+                    logger.info(f"Extracted files scanned count from semgrep output: {files_scanned}")
 
             output = stdout.decode() if stdout else ""
             if not output.strip():
@@ -347,7 +349,6 @@ class SecurityScanner:
         finally:
             if semgrepignore_path.exists():
                 semgrepignore_path.unlink()
-
 
 
     def _process_scan_results(self, results: Dict) -> Dict:
