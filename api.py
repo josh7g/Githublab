@@ -320,13 +320,23 @@ def trigger_repository_scan():
         }), 400
 
     try:
-        # Get GitHub token with error handling
+        # Get GitHub token with enhanced error handling
         try:
+            logger.info(f"Getting access token for installation ID: {installation_id}")
             token_response = git_integration.get_access_token(int(installation_id))
-            if not token_response or not hasattr(token_response, 'token'):
-                raise ValueError("Failed to get valid GitHub token")
+            
+            if not token_response:
+                raise ValueError("Empty token response from GitHub")
+                
+            if not hasattr(token_response, 'token'):
+                raise ValueError("Invalid token response format")
+                
             installation_token = token_response.token
+            if not installation_token:
+                raise ValueError("Empty token value")
+                
             logger.info(f"Successfully obtained GitHub token for installation ID: {installation_id}")
+                
         except Exception as token_error:
             error_msg = f"Failed to get GitHub access token: {str(token_error)}"
             logger.error(error_msg)
