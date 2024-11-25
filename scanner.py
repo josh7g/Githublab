@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 from collections import defaultdict
 import re
+from models import AnalysisResult
 
 logging.basicConfig(
     level=logging.INFO,
