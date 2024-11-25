@@ -3,6 +3,8 @@ from sqlalchemy import func, desc
 from models import db, AnalysisResult
 from collections import defaultdict
 import os
+import ssl
+import fnmatch
 import logging
 from pathlib import Path
 from github import Github

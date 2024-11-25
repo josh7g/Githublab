@@ -35,11 +35,11 @@ class ScanConfig:
     max_file_size_mb: int = 25
     max_total_size_mb: int = 300
     max_memory_mb: int = 1500
-    chunk_size_mb: int = 30  # Smaller chunks
+    chunk_size_mb: int = 30
     max_files_per_chunk: int = 50
     
-    timeout_seconds: int = 540  # 9 minutes
-    chunk_timeout: int = 120    # 2 minutes per chunk
+    timeout_seconds: int = 540
+    chunk_timeout: int = 120
     file_timeout_seconds: int = 20
     max_retries: int = 2
     concurrent_processes: int = 1
@@ -183,45 +183,15 @@ class SecurityScanner:
             self.temp_dir = Path(tempfile.mkdtemp(prefix='scanner_'))
             logger.info(f"Created temporary directory: {self.temp_dir}")
             
-            logger.info("Creating SSL context...")
-            # Create SSL context with debug logging
-            try:
-                ssl_context = ssl.create_default_context()
-                logger.info("SSL context created successfully")
-            except Exception as ssl_error:
-                logger.error(f"Failed to create SSL context: {str(ssl_error)}")
-                raise
+            ssl_context = ssl.create_default_context()
+            conn = aiohttp.TCPConnector(ssl=ssl_context)
+            timeout = aiohttp.ClientTimeout(total=30)
             
-            logger.info("Creating TCP connector...")
-            # Create connector with debug logging
-            try:
-                conn = aiohttp.TCPConnector(ssl=ssl_context)
-                logger.info("TCP connector created successfully")
-            except Exception as conn_error:
-                logger.error(f"Failed to create TCP connector: {str(conn_error)}")
-                raise
-            
-            logger.info("Setting up client timeout...")
-            # Create timeout with debug logging
-            try:
-                timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
-                logger.info("Client timeout configured successfully")
-            except Exception as timeout_error:
-                logger.error(f"Failed to create timeout: {str(timeout_error)}")
-                raise
-            
-            logger.info("Creating aiohttp session...")
-            # Create session with debug logging
-            try:
-                self._session = aiohttp.ClientSession(
-                    connector=conn,
-                    timeout=timeout,
-                    raise_for_status=True
-                )
-                logger.info("aiohttp session created successfully")
-            except Exception as session_error:
-                logger.error(f"Failed to create aiohttp session: {str(session_error)}")
-                raise
+            self._session = aiohttp.ClientSession(
+                connector=conn,
+                timeout=timeout,
+                raise_for_status=True
+            )
             
             self.scan_stats['start_time'] = datetime.now()
             logger.info("Scanner setup completed successfully")
