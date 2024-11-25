@@ -319,192 +319,141 @@ def trigger_repository_scan():
             }
         }), 400
 
-    try:
-        # Get GitHub token with enhanced error handling
+    async def run_scan():
         try:
-            logger.info(f"Getting access token for installation ID: {installation_id}")
-            token_response = git_integration.get_access_token(int(installation_id))
-            
-            if not token_response:
-                raise ValueError("Empty token response from GitHub")
-                
-            if not hasattr(token_response, 'token'):
-                raise ValueError("Invalid token response format")
-                
-            installation_token = token_response.token
-            if not installation_token:
-                raise ValueError("Empty token value")
-                
-            logger.info(f"Successfully obtained GitHub token for installation ID: {installation_id}")
-                
-        except Exception as token_error:
-            error_msg = f"Failed to get GitHub access token: {str(token_error)}"
-            logger.error(error_msg)
-            
-            # Store token error in database
+            # Get GitHub token with error handling
             try:
-                error_analysis = AnalysisResult(
-                    repository_name=f"{owner}/{repo}",
-                    user_id=user_id,
-                    status='error',
-                    error=error_msg,
-                    timestamp=datetime.utcnow()
-                )
-                db.session.add(error_analysis)
-                db.session.commit()
-            except Exception as db_e:
-                logger.error(f"Failed to store error record: {str(db_e)}")
-                db.session.rollback()
-            
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': 'GitHub authentication failed',
-                    'code': 'AUTH_ERROR',
-                    'details': str(token_error),
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            }), 401
-        
-        # Create an event loop if one doesn't exist
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Initialize scanner with config and db session
-        config = ScanConfig()
-        scanner = SecurityScanner(config=config, db_session=db.session)
-        
-        try:
-            # Pre-check repository size
-            size_info = loop.run_until_complete(
-                scanner._check_repository_size(repo_url, installation_token)
-            )
-            
-            if not size_info:
-                raise ValueError("Failed to get repository size information")
+                logger.info(f"Getting access token for installation ID: {installation_id}")
+                token_response = git_integration.get_access_token(int(installation_id))
                 
-            if not size_info.get('is_compatible'):
-                return jsonify({
+                if not token_response:
+                    raise ValueError("Empty token response from GitHub")
+                    
+                if not hasattr(token_response, 'token'):
+                    raise ValueError("Invalid token response format")
+                    
+                installation_token = token_response.token
+                if not installation_token:
+                    raise ValueError("Empty token value")
+                    
+                logger.info(f"Successfully obtained GitHub token for installation ID: {installation_id}")
+                    
+            except Exception as token_error:
+                error_msg = f"Failed to get GitHub access token: {str(token_error)}"
+                logger.error(error_msg)
+                
+                # Store token error in database
+                try:
+                    error_analysis = AnalysisResult(
+                        repository_name=f"{owner}/{repo}",
+                        user_id=user_id,
+                        status='error',
+                        error=error_msg,
+                        timestamp=datetime.utcnow()
+                    )
+                    db.session.add(error_analysis)
+                    db.session.commit()
+                except Exception as db_e:
+                    logger.error(f"Failed to store error record: {str(db_e)}")
+                    db.session.rollback()
+                
+                return {
                     'success': False,
                     'error': {
-                        'message': 'Repository too large for analysis',
-                        'code': 'REPOSITORY_TOO_LARGE',
-                        'details': {
-                            'size_mb': size_info.get('size_mb', 0),
-                            'limit_mb': config.max_total_size_mb,
-                            'recommendation': 'Consider analyzing specific directories or branches'
-                        }
+                        'message': 'GitHub authentication failed',
+                        'code': 'AUTH_ERROR',
+                        'details': str(token_error),
+                        'timestamp': datetime.utcnow().isoformat()
                     }
-                }), 400
+                }, 401
+
+            # Initialize scanner with config and db session
+            config = ScanConfig()
             
-            # Run the scan
-            results = loop.run_until_complete(
-                scanner.scan_repository(
-                    repo_url=repo_url,
-                    installation_token=installation_token,
-                    user_id=user_id
-                )
-            )
-            
-            # Add repository metadata to results if scan was successful
-            if results.get('success'):
-                if 'data' not in results:
-                    results['data'] = {}
+            # Use async context manager to properly initialize scanner
+            async with SecurityScanner(config=config, db_session=db.session) as scanner:
+                try:
+                    # Pre-check repository size
+                    size_info = await scanner._check_repository_size(repo_url, installation_token)
                     
-                results['data']['repository_info'] = {
-                    'size_mb': size_info.get('size_mb', 0),
-                    'primary_language': size_info.get('language', 'unknown'),
-                    'default_branch': size_info.get('default_branch', 'main')
-                }
-            
-            return jsonify(results)
+                    if not size_info:
+                        raise ValueError("Failed to get repository size information")
+                        
+                    if not size_info.get('is_compatible'):
+                        return {
+                            'success': False,
+                            'error': {
+                                'message': 'Repository too large for analysis',
+                                'code': 'REPOSITORY_TOO_LARGE',
+                                'details': {
+                                    'size_mb': size_info.get('size_mb', 0),
+                                    'limit_mb': config.max_total_size_mb,
+                                    'recommendation': 'Consider analyzing specific directories or branches'
+                                }
+                            }
+                        }, 400
+                    
+                    # Run the scan
+                    scan_results = await scanner.scan_repository(
+                        repo_url=repo_url,
+                        installation_token=installation_token,
+                        user_id=user_id
+                    )
+                    
+                    if scan_results.get('success'):
+                        # Add repository metadata
+                        if 'data' not in scan_results:
+                            scan_results['data'] = {}
+                            
+                        scan_results['data']['repository_info'] = {
+                            'size_mb': size_info.get('size_mb', 0),
+                            'primary_language': size_info.get('language', 'unknown'),
+                            'default_branch': size_info.get('default_branch', 'main')
+                        }
+                    
+                    return scan_results, 200
 
-        except ValueError as ve:
-            error_msg = str(ve)
-            logger.error(f"Validation error: {error_msg}")
-            
-            # Store error in database
-            try:
-                error_analysis = AnalysisResult(
-                    repository_name=f"{owner}/{repo}",
-                    user_id=user_id,
-                    status='error',
-                    error=error_msg,
-                    timestamp=datetime.utcnow()
-                )
-                db.session.add(error_analysis)
-                db.session.commit()
-            except Exception as db_e:
-                logger.error(f"Failed to store error record: {str(db_e)}")
-                db.session.rollback()
-            
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': error_msg,
-                    'code': 'VALIDATION_ERROR',
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            }), 400
-            
-        except git.GitCommandError as ge:
-            error_msg = f"Git operation failed: {str(ge)}"
+                except ValueError as ve:
+                    error_msg = str(ve)
+                    logger.error(f"Validation error: {error_msg}")
+                    return {
+                        'success': False,
+                        'error': {
+                            'message': error_msg,
+                            'code': 'VALIDATION_ERROR',
+                            'timestamp': datetime.utcnow().isoformat()
+                        }
+                    }, 400
+
+        except Exception as e:
+            error_msg = f"Unexpected error in scan handler: {str(e)}"
             logger.error(error_msg)
-            
-            # Store error in database
-            try:
-                error_analysis = AnalysisResult(
-                    repository_name=f"{owner}/{repo}",
-                    user_id=user_id,
-                    status='error',
-                    error=error_msg,
-                    timestamp=datetime.utcnow()
-                )
-                db.session.add(error_analysis)
-                db.session.commit()
-            except Exception as db_e:
-                logger.error(f"Failed to store error record: {str(db_e)}")
-                db.session.rollback()
-            
-            return jsonify({
+            return {
                 'success': False,
                 'error': {
-                    'message': 'Git operation failed',
-                    'code': 'GIT_ERROR',
-                    'details': str(ge),
+                    'message': 'Unexpected error in scan handler',
+                    'code': 'INTERNAL_ERROR',
+                    'details': str(e),
+                    'type': type(e).__name__,
                     'timestamp': datetime.utcnow().isoformat()
                 }
-            }), 400
+            }, 500
 
+    # Run the async function
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        results, status_code = loop.run_until_complete(run_scan())
+        loop.close()
+        return jsonify(results), status_code
     except Exception as e:
-        error_msg = f"Unexpected error in scan handler: {str(e)}"
-        logger.error(error_msg)
-        
-        # Store error in database
-        try:
-            error_analysis = AnalysisResult(
-                repository_name=f"{owner}/{repo}",
-                user_id=user_id,
-                status='error',
-                error=error_msg,
-                timestamp=datetime.utcnow()
-            )
-            db.session.add(error_analysis)
-            db.session.commit()
-        except Exception as db_e:
-            logger.error(f"Failed to store error record: {str(db_e)}")
-            db.session.rollback()
-        
+        logger.error(f"Error in async execution: {str(e)}")
         return jsonify({
             'success': False,
             'error': {
-                'message': 'Unexpected error in scan handler',
-                'code': 'INTERNAL_ERROR',
+                'message': 'Error in async execution',
+                'code': 'ASYNC_ERROR',
                 'details': str(e),
-                'type': type(e).__name__,
                 'timestamp': datetime.utcnow().isoformat()
             }
         }), 500
