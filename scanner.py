@@ -200,32 +200,104 @@ class SecurityScanner:
     async def _check_repository_size(self, repo_url: str, token: str) -> Dict:
         """Pre-check repository size using GitHub API"""
         try:
-            owner, repo = repo_url.split('github.com/')[-1].replace('.git', '').split('/')
+            # Validate token
+            if not token:
+                raise ValueError("GitHub token is empty or invalid")
+                
+            # Log the full repo URL for debugging
+            logger.info(f"Checking size for repository: {repo_url}")
+            
+            # Extract owner and repo with better error handling
+            try:
+                if 'github.com/' not in repo_url:
+                    raise ValueError(f"Invalid GitHub URL format: {repo_url}")
+                    
+                path_part = repo_url.split('github.com/')[-1].replace('.git', '')
+                if '/' not in path_part:
+                    raise ValueError(f"Invalid repository path format: {path_part}")
+                    
+                owner, repo = path_part.split('/')
+                logger.info(f"Parsed owner: {owner}, repo: {repo}")
+                
+            except Exception as e:
+                logger.error(f"Failed to parse repository URL: {str(e)}")
+                raise ValueError(f"Invalid repository URL format: {str(e)}")
+            
             api_url = f"https://api.github.com/repos/{owner}/{repo}"
+            logger.info(f"GitHub API URL: {api_url}")
+            
+            # Add User-Agent header and debug info
             headers = {
                 'Authorization': f'Bearer {token}',
-                'Accept': 'application/vnd.github.v3+json'
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'SecurityScanner'
             }
             
-            async with self._session.get(api_url, headers=headers) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise ValueError(f"Failed to get repository info: {error_text}")
-                
-                data = await response.json()
-                size_kb = data.get('size', 0)
-                size_mb = size_kb / 1024
-
-                return {
-                    'size_mb': size_mb,
-                    'is_compatible': size_mb <= self.config.max_total_size_mb,
-                    'language': data.get('language'),
-                    'default_branch': data.get('default_branch')
-                }
+            logger.info("Making GitHub API request...")
+            logger.debug(f"Headers: {headers}")
+            
+            try:
+                async with self._session.get(api_url, headers=headers) as response:
+                    logger.info(f"GitHub API Response Status: {response.status}")
+                    response_text = await response.text()
+                    logger.info(f"GitHub API Response: {response_text[:500]}")  # Log first 500 chars of response
                     
-        except Exception as e:
+                    if response.status == 401:
+                        logger.error(f"Authentication failed: {response_text}")
+                        raise ValueError("GitHub authentication failed - invalid token")
+                        
+                    elif response.status == 403:
+                        logger.error(f"Authorization failed: {response_text}")
+                        raise ValueError("GitHub authorization failed - insufficient permissions")
+                        
+                    elif response.status == 404:
+                        logger.error(f"Repository not found: {response_text}")
+                        raise ValueError(f"Repository {owner}/{repo} not found or inaccessible")
+                        
+                    elif response.status != 200:
+                        logger.error(f"GitHub API error: {response_text}")
+                        raise ValueError(f"Failed to get repository info: HTTP {response.status}")
+                    
+                    try:
+                        data = await response.json()
+                        logger.info("Successfully parsed JSON response")
+                    except json.JSONDecodeError as je:
+                        logger.error(f"Failed to parse JSON response: {str(je)}")
+                        raise ValueError(f"Invalid JSON response from GitHub API: {str(je)}")
+                    
+                    if not data:
+                        logger.error("Empty response data from GitHub API")
+                        raise ValueError("Empty response from GitHub API")
+                    
+                    # Log the keys we're trying to access
+                    logger.info(f"Response data keys: {data.keys() if isinstance(data, dict) else 'Not a dict'}")
+                    
+                    size_kb = data.get('size', 0)
+                    size_mb = size_kb / 1024
+                    
+                    logger.info(f"Repository size: {size_mb:.2f}MB")
+                    logger.info(f"Language: {data.get('language', 'unknown')}")
+                    logger.info(f"Default branch: {data.get('default_branch', 'main')}")
+
+                    return {
+                        'size_mb': size_mb,
+                        'is_compatible': size_mb <= self.config.max_total_size_mb,
+                        'language': data.get('language'),
+                        'default_branch': data.get('default_branch', 'main')
+                    }
+                    
+            except aiohttp.ClientError as ce:
+                logger.error(f"HTTP request failed: {str(ce)}")
+                raise ValueError(f"Failed to connect to GitHub API: {str(ce)}")
+                    
+        except (ValueError, KeyError) as e:
             logger.error(f"Error checking repository size: {str(e)}")
             raise
+        except Exception as e:
+            logger.error(f"Unexpected error checking repository size: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            logger.error(f"Exception traceback: {traceback.format_exc()}")
+            raise ValueError(f"Failed to check repository size: {str(e)}")
 
     async def _clone_repository(self, repo_url: str, token: str) -> Path:
         """Clone repository with size validation and optimizations"""
