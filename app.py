@@ -53,6 +53,14 @@ if not DATABASE_URL:
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Add SSL configuration if using SSL
+if os.getenv('FLASK_ENV') == 'production':
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'connect_args': {
+            'sslmode': 'require'
+        }
+    }
+
 # Initialize database
 db.init_app(app)
 
