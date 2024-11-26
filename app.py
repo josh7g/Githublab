@@ -20,8 +20,7 @@ import requests
 from flask_cors import CORS
 from asgiref.wsgi import WsgiToAsgi
 from scanner import SecurityScanner, ScanConfig, scan_repository_handler
-from api import api
-from routes import api, analysis_bp
+from api import api, analysis_bp
 
 # Load environment variables in development
 if os.getenv('FLASK_ENV') != 'production':
