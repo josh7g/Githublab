@@ -328,6 +328,7 @@ async def trigger_repository_scan():
         }), 400
 
     async def run_scan():
+        analysis = None
         try:
             # Get GitHub token with error handling
             try:
@@ -344,7 +345,7 @@ async def trigger_repository_scan():
 
             config = ScanConfig()
             
-            # Create analysis record first
+            # Create a single analysis record
             analysis = AnalysisResult(
                 repository_name=f"{owner}/{repo}",
                 user_id=user_id,
@@ -364,60 +365,65 @@ async def trigger_repository_scan():
                         user_id=user_id
                     )
 
-                    # If scan successful, send to AI reranking
                     if scan_results.get('success'):
-                        try:
-                            # Get the findings from scan results
-                            findings = scan_results.get('data', {}).get('findings', [])
-                            
-                            # Prepare data for AI reranking
-                            rerank_data = {
-                                'findings': findings,
-                                'metadata': {
-                                    'repository': f"{owner}/{repo}",
-                                    'user_id': user_id,
-                                    'timestamp': datetime.utcnow().isoformat(),
-                                    'scan_id': analysis.id
-                                }
+                        # Update the analysis record with scan results
+                        analysis.results = scan_results.get('data', {})
+                        analysis.status = 'scanning_completed'
+                        db.session.commit()
+
+                        # Get the findings for reranking
+                        findings = scan_results.get('data', {}).get('findings', [])
+                        
+                        # Prepare data for AI reranking
+                        rerank_data = {
+                            'findings': findings,
+                            'metadata': {
+                                'repository': f"{owner}/{repo}",
+                                'user_id': user_id,
+                                'timestamp': datetime.utcnow().isoformat(),
+                                'scan_id': analysis.id
                             }
+                        }
 
-                            # Send to AI reranking service
-                            AI_RERANK_URL = os.getenv('RERANK_API_URL')
-                            if not AI_RERANK_URL:
-                                raise ValueError("RERANK_API_URL not configured")
+                        # Send to AI reranking service
+                        AI_RERANK_URL = os.getenv('RERANK_API_URL')
+                        if not AI_RERANK_URL:
+                            raise ValueError("RERANK_API_URL not configured")
 
-                            async with aiohttp.ClientSession() as session:
-                                async with session.post(AI_RERANK_URL, json=rerank_data) as response:
-                                    if response.status == 200:
-                                        reranked_results = await response.json()
-                                        
-                                        # Update analysis with reranked results
-                                        analysis.rerank = reranked_results
-                                        analysis.status = 'completed'
-                                        db.session.commit()
-                                        logger.info(f"Stored reranked results for analysis {analysis.id}")
-                                        
-                                        # Add reranked results to the response
-                                        scan_results['data']['reranked_findings'] = reranked_results
-                                    else:
-                                        logger.error(f"AI reranking failed: {await response.text()}")
-                                        
-                        except Exception as rerank_error:
-                            logger.error(f"Error during reranking: {str(rerank_error)}")
-                            # Continue without reranking if it fails
+                        async with aiohttp.ClientSession() as session:
+                            async with session.post(AI_RERANK_URL, json=rerank_data) as response:
+                                if response.status == 200:
+                                    reranked_results = await response.json()
+                                    
+                                    # Update the SAME analysis record with reranked results
+                                    analysis.rerank = reranked_results
+                                    analysis.status = 'completed'
+                                    db.session.commit()
+                                    logger.info(f"Updated analysis {analysis.id} with reranked results")
+                                    
+                                    # Include both original and reranked results in response
+                                    scan_results['data']['reranked_findings'] = reranked_results
+                                else:
+                                    error_text = await response.text()
+                                    logger.error(f"AI reranking failed: {error_text}")
+                                    analysis.status = 'reranking_failed'
+                                    analysis.error = f"Reranking failed: {error_text}"
+                                    db.session.commit()
+                                    
+                        return scan_results, 200
                     else:
                         # Update analysis status if scan failed
                         analysis.status = 'failed'
                         analysis.error = scan_results.get('error', {}).get('message', 'Scan failed')
                         db.session.commit()
-                
-                    return scan_results, 200
+                        return scan_results, 500
                 
                 except Exception as scan_error:
                     logger.error(f"Scan error: {str(scan_error)}")
-                    analysis.status = 'failed'
-                    analysis.error = str(scan_error)
-                    db.session.commit()
+                    if analysis:
+                        analysis.status = 'failed'
+                        analysis.error = str(scan_error)
+                        db.session.commit()
                     return {
                         'success': False,
                         'error': {
@@ -428,6 +434,10 @@ async def trigger_repository_scan():
 
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}")
+            if analysis:
+                analysis.status = 'failed'
+                analysis.error = str(e)
+                db.session.commit()
             return {
                 'success': False,
                 'error': {
