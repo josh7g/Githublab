@@ -21,6 +21,7 @@ from flask_cors import CORS
 from asgiref.wsgi import WsgiToAsgi
 from scanner import SecurityScanner, ScanConfig, scan_repository_handler
 from api import api
+from routes import api, analysis_bp
 
 # Load environment variables in development
 if os.getenv('FLASK_ENV') != 'production':
@@ -29,6 +30,8 @@ if os.getenv('FLASK_ENV') != 'production':
 app = Flask(__name__)
 CORS(app)
 asgi_app = WsgiToAsgi(app)
+app.register_blueprint(api)
+app.register_blueprint(analysis_bp)
 
 # Create an event loop for async operations
 loop = asyncio.new_event_loop()
@@ -52,6 +55,8 @@ if not DATABASE_URL:
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
 
 # Add SSL configuration if using SSL
 if os.getenv('FLASK_ENV') == 'production':
