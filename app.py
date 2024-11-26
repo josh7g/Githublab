@@ -13,11 +13,9 @@ from dotenv import load_dotenv
 from datetime import datetime
 from flask_cors import CORS
 from models import db, AnalysisResult
-from sqlalchemy import or_
-from sqlalchemy import text
+from sqlalchemy import or_, text
 import traceback
 import requests
-from flask_cors import CORS
 from asgiref.wsgi import WsgiToAsgi
 from scanner import SecurityScanner, ScanConfig, scan_repository_handler
 from api import api, analysis_bp
@@ -36,8 +34,6 @@ app.register_blueprint(analysis_bp)
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
-
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO if os.getenv('FLASK_ENV') == 'production' else logging.DEBUG,
@@ -45,6 +41,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Configure database
 DATABASE_URL = os.getenv('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
     DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
@@ -55,8 +52,6 @@ if not DATABASE_URL:
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
-
 # Add SSL configuration if using SSL
 if os.getenv('FLASK_ENV') == 'production':
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
@@ -66,9 +61,12 @@ if os.getenv('FLASK_ENV') == 'production':
     }
 
 # Initialize database
-db.init_app(app)
-
-app.register_blueprint(api)
+try:
+    db.init_app(app)
+    logger.info("Database initialization successful")
+except Exception as e:
+    logger.error(f"Failed to initialize database: {str(e)}")
+    raise
 
 # Initialize database and run migrations
 with app.app_context():
@@ -117,6 +115,7 @@ with app.app_context():
         logger.error(traceback.format_exc())
     finally:
         db.session.remove()
+
 
 
 def format_private_key(key_data):
