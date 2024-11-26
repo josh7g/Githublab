@@ -17,6 +17,7 @@ from typing import Dict, Any, List
 from datetime import datetime
 from scanner import SecurityScanner, ScanConfig
 import git
+import aiohttp
 
 
 
@@ -291,7 +292,7 @@ def get_top_vulnerabilities(user_id):
 
 @api.route('/scan', methods=['POST'])
 def trigger_repository_scan():
-    """Trigger a semgrep security scan for a repository with deduplication"""
+    """Trigger a semgrep security scan for a repository and get reranking"""
     from app import git_integration, db
     
     # Get data from POST request body
@@ -326,134 +327,84 @@ def trigger_repository_scan():
             }
         }), 400
 
-    repo_url = f"https://github.com/{owner}/{repo}"
-    if not repo_url.startswith(('https://github.com/', 'git@github.com:')):
-        return jsonify({
-            'success': False,
-            'error': {
-                'message': 'Invalid repository URL format',
-                'code': 'INVALID_REPOSITORY_URL',
-                'details': 'Only GitHub repositories are supported'
-            }
-        }), 400
-
     async def run_scan():
         try:
             # Get GitHub token with error handling
             try:
-                logger.info(f"Getting access token for installation ID: {installation_id}")
-                token_response = git_integration.get_access_token(int(installation_id))
-                
-                if not token_response:
-                    raise ValueError("Empty token response from GitHub")
-                    
-                if not hasattr(token_response, 'token'):
-                    raise ValueError("Invalid token response format")
-                    
-                installation_token = token_response.token
-                if not installation_token:
-                    raise ValueError("Empty token value")
-                    
-                logger.info(f"Successfully obtained GitHub token for installation ID: {installation_id}")
-                    
+                installation_token = git_integration.get_access_token(int(installation_id)).token
             except Exception as token_error:
-                error_msg = f"Failed to get GitHub access token: {str(token_error)}"
-                logger.error(error_msg)
-                
-                # Store token error in database
-                try:
-                    error_analysis = AnalysisResult(
-                        repository_name=f"{owner}/{repo}",
-                        user_id=user_id,
-                        status='error',
-                        error=error_msg,
-                        timestamp=datetime.utcnow()
-                    )
-                    db.session.add(error_analysis)
-                    db.session.commit()
-                except Exception as db_e:
-                    logger.error(f"Failed to store error record: {str(db_e)}")
-                    db.session.rollback()
-                
                 return {
                     'success': False,
                     'error': {
                         'message': 'GitHub authentication failed',
                         'code': 'AUTH_ERROR',
-                        'details': str(token_error),
-                        'timestamp': datetime.utcnow().isoformat()
+                        'details': str(token_error)
                     }
                 }, 401
 
-            # Initialize scanner with config and db session
-            config = ScanConfig()
-            
-            # Use async context manager to properly initialize scanner
-            async with SecurityScanner(config=config, db_session=db.session) as scanner:
-                try:
-                    # Pre-check repository size
-                    size_info = await scanner._check_repository_size(repo_url, installation_token)
-                    
-                    if not size_info:
-                        raise ValueError("Failed to get repository size information")
-                        
-                    if not size_info.get('is_compatible'):
-                        return {
-                            'success': False,
-                            'error': {
-                                'message': 'Repository too large for analysis',
-                                'code': 'REPOSITORY_TOO_LARGE',
-                                'details': {
-                                    'size_mb': size_info.get('size_mb', 0),
-                                    'limit_mb': config.max_total_size_mb,
-                                    'recommendation': 'Consider analyzing specific directories or branches'
-                                }
-                            }
-                        }, 400
-                    
-                    # Run the scan
-                    scan_results = await scanner.scan_repository(
-                        repo_url=repo_url,
-                        installation_token=installation_token,
-                        user_id=user_id
-                    )
-                    
-                    if scan_results.get('success'):
-                        # Add repository metadata
-                        if 'data' not in scan_results:
-                            scan_results['data'] = {}
-                            
-                        scan_results['data']['repository_info'] = {
-                            'size_mb': size_info.get('size_mb', 0),
-                            'primary_language': size_info.get('language', 'unknown'),
-                            'default_branch': size_info.get('default_branch', 'main')
-                        }
-                    
-                    return scan_results, 200
+            # Run the security scan
+            scanner = SecurityScanner(config=ScanConfig(), db_session=db.session)
+            scan_results = await scanner.scan_repository(
+                repo_url=f"https://github.com/{owner}/{repo}",
+                installation_token=installation_token,
+                user_id=user_id
+            )
 
-                except ValueError as ve:
-                    error_msg = str(ve)
-                    logger.error(f"Validation error: {error_msg}")
-                    return {
-                        'success': False,
-                        'error': {
-                            'message': error_msg,
-                            'code': 'VALIDATION_ERROR',
-                            'timestamp': datetime.utcnow().isoformat()
+            # If scan successful, send to AI reranking
+            if scan_results.get('success'):
+                try:
+                    # Get the findings from scan results
+                    findings = scan_results.get('data', {}).get('findings', [])
+                    
+                    # Prepare data for AI reranking
+                    rerank_data = {
+                        'findings': findings,
+                        'metadata': {
+                            'repository': f"{owner}/{repo}",
+                            'user_id': user_id,
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'scan_id': scan_results.get('data', {}).get('metadata', {}).get('analysis_id')
                         }
-                    }, 400
+                    }
+
+                    # Send to AI reranking service
+                    AI_RERANK_URL = os.getenv('RERANK_API_URL')
+                    if not AI_RERANK_URL:
+                        raise ValueError("RERANK_API_URL not configured")
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(AI_RERANK_URL, json=rerank_data) as response:
+                            if response.status == 200:
+                                reranked_results = await response.json()
+                                
+                                # Store reranked results
+                                analysis = AnalysisResult.query.filter_by(
+                                    repository_name=f"{owner}/{repo}"
+                                ).order_by(AnalysisResult.timestamp.desc()).first()
+                                
+                                if analysis:
+                                    analysis.rerank = reranked_results
+                                    db.session.commit()
+                                    logger.info(f"Stored reranked results for analysis {analysis.id}")
+                                    
+                                    # Add reranked results to the response
+                                    scan_results['data']['reranked_findings'] = reranked_results
+                            else:
+                                logger.error(f"AI reranking failed: {await response.text()}")
+                                
+                except Exception as rerank_error:
+                    logger.error(f"Error during reranking: {str(rerank_error)}")
+                    # Continue without reranking if it fails
+            
+            return scan_results, 200
 
         except Exception as e:
-            error_msg = f"Unexpected error in scan handler: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"Scan error: {str(e)}")
             return {
                 'success': False,
                 'error': {
-                    'message': 'Unexpected error in scan handler',
-                    'code': 'INTERNAL_ERROR',
-                    'details': str(e),
-                    'type': type(e).__name__,
-                    'timestamp': datetime.utcnow().isoformat()
+                    'message': str(e),
+                    'code': 'SCAN_ERROR'
                 }
             }, 500
 
@@ -471,7 +422,6 @@ def trigger_repository_scan():
             'error': {
                 'message': 'Error in async execution',
                 'code': 'ASYNC_ERROR',
-                'details': str(e),
-                'timestamp': datetime.utcnow().isoformat()
+                'details': str(e)
             }
         }), 500

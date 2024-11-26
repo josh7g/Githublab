@@ -1,4 +1,3 @@
-# db_cleanup.py
 from app import app, db
 from sqlalchemy import text
 import logging
@@ -11,7 +10,7 @@ def backup_data():
     with app.app_context():
         try:
             result = db.session.execute(text("""
-                SELECT id, repository_name, timestamp, status, results, error
+                SELECT id, repository_name, timestamp, status, results, error, user_id, rerank
                 FROM analysis_results
             """))
             return [dict(row) for row in result]
@@ -40,14 +39,24 @@ def rebuild_table():
             db.create_all()
             
             if backup:
-                # Restore data with null user_id
+                # Restore data with null values for missing columns
                 logger.info("Restoring data...")
                 for record in backup:
                     db.session.execute(text("""
                         INSERT INTO analysis_results 
-                        (id, repository_name, timestamp, status, results, error, user_id)
-                        VALUES (:id, :repository_name, :timestamp, :status, :results, :error, NULL)
-                    """), record)
+                        (id, repository_name, timestamp, status, results, error, user_id, rerank)
+                        VALUES (:id, :repository_name, :timestamp, :status, :results, :error, 
+                               :user_id, :rerank)
+                    """), {
+                        'id': record['id'],
+                        'repository_name': record['repository_name'],
+                        'timestamp': record['timestamp'],
+                        'status': record['status'],
+                        'results': record['results'],
+                        'error': record['error'],
+                        'user_id': record.get('user_id'),  # Use get() to handle if column doesn't exist
+                        'rerank': record.get('rerank')     # Use get() to handle if column doesn't exist
+                    })
                 
                 db.session.commit()
                 logger.info("Data restored successfully!")

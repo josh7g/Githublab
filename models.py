@@ -6,14 +6,15 @@ db = SQLAlchemy()
 
 class AnalysisResult(db.Model):
     __tablename__ = 'analysis_results'
-
+    
     id = db.Column(db.Integer, primary_key=True)
-    repository_name = db.Column(db.String(255), nullable=False, index=True)
-    user_id = db.Column(db.String(255), nullable=True, index=True)
+    repository_name = db.Column(db.String(255), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(50))
-    results = db.Column(JSON)
+    status = db.Column(db.String(50), default='pending')
+    results = db.Column(JSONB)
     error = db.Column(db.Text)
+    user_id = db.Column(db.String(255))
+    rerank = db.Column(JSONB)  # New column for reranked results
     
     def to_dict(self):
         return {

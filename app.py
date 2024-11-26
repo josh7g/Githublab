@@ -79,8 +79,8 @@ with app.app_context():
         db.session.execute(text('SELECT 1'))
         db.session.commit()
         logger.info("Database connection successful")
-
-        # Check if user_id column exists
+        
+        # Check and add user_id column
         try:
             result = db.session.execute(text("""
                 SELECT column_name 
@@ -106,8 +106,28 @@ with app.app_context():
             else:
                 logger.info("user_id column already exists")
 
+            # Check and add rerank column
+            result = db.session.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='analysis_results' AND column_name='rerank'
+            """))
+            rerank_exists = bool(result.scalar())
+            
+            if not rerank_exists:
+                # Add rerank column
+                logger.info("Adding rerank column...")
+                db.session.execute(text("""
+                    ALTER TABLE analysis_results 
+                    ADD COLUMN IF NOT EXISTS rerank JSONB
+                """))
+                db.session.commit()
+                logger.info("rerank column added successfully")
+            else:
+                logger.info("rerank column already exists")
+
         except Exception as column_error:
-            logger.error(f"Error managing user_id column: {str(column_error)}")
+            logger.error(f"Error managing columns: {str(column_error)}")
             db.session.rollback()
 
     except Exception as e:
