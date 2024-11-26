@@ -115,7 +115,7 @@ def get_analysis_findings(owner: str, repo: str):
     try:
         # Get query parameters
         page = max(1, int(request.args.get('page', 1)))
-        per_page = min(100, max(1, int(request.args.get('limit', 10))))
+        per_page = min(100, max(1, int(request.args.get('limit', 30))))
         severity = request.args.get('severity', '').upper()
         category = request.args.get('category', '')
         file_path = request.args.get('file', '')
