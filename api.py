@@ -397,40 +397,56 @@ async def trigger_repository_scan():
                     async with aiohttp.ClientSession() as session:
                         async with session.post(AI_RERANK_URL, json=llm_data) as response:
                             if response.status == 200:
-                                # Get ordered IDs from LLM
-                                reranked_ids = await response.json()
-                                
-                                # Create mapping of ID to finding
-                                findings_map = {finding['ID']: finding for finding in findings}
-                                
-                                # Reorder findings based on LLM response
-                                reordered_findings = [findings_map[id] for id in reranked_ids]
-                                
-                                # Store reranked results
-                                rerank_results = {
-                                    'reranked_findings': reordered_findings,
-                                    'metadata': {
-                                        'original_order': [f['ID'] for f in findings],
-                                        'llm_order': reranked_ids,
-                                        'timestamp': datetime.utcnow().isoformat()
+                                try:
+                                    response_data = await response.json()
+                                    # If response is directly the array
+                                    reranked_ids = response_data
+                                    if isinstance(response_data, dict):
+                                        # If response is wrapped in llm_response key
+                                        reranked_ids = response_data.get('llm_response', [])
+                                    
+                                    # Create mapping of ID to finding
+                                    findings_map = {finding['ID']: finding for finding in findings}
+                                    
+                                    # Reorder findings based on LLM response
+                                    reordered_findings = [findings_map[id] for id in reranked_ids]
+                                    
+                                    # Store reranked results
+                                    rerank_results = {
+                                        'reranked_findings': reordered_findings,
+                                        'metadata': {
+                                            'original_order': [f['ID'] for f in findings],
+                                            'llm_order': reranked_ids,
+                                            'timestamp': datetime.utcnow().isoformat()
+                                        }
                                     }
-                                }
-                                
-                                # Update analysis record
-                                analysis.rerank = rerank_results
-                                analysis.status = 'completed'
-                                db.session.commit()
-                                logger.info(f"Updated analysis {analysis.id} with reranked results")
-                                
-                                # Add reranked results to response
-                                scan_results['data']['reranked_findings'] = rerank_results
+                                    
+                                    # Update analysis record
+                                    analysis.rerank = rerank_results
+                                    analysis.status = 'completed'
+                                    db.session.commit()
+                                    logger.info(f"Updated analysis {analysis.id} with reranked results")
+                                    
+                                    # Add reranked results to response
+                                    scan_results['data']['reranked_findings'] = rerank_results
+                                    
+                                    # Log the response for debugging
+                                    logger.info(f"LLM Response: {response_data}")
+                                    logger.info(f"Reranked IDs: {reranked_ids}")
+                                    
+                                except Exception as e:
+                                    logger.error(f"Error processing LLM response: {str(e)}")
+                                    logger.error(f"Raw response: {await response.text()}")
+                                    analysis.status = 'reranking_failed'
+                                    analysis.error = f"Error processing LLM response: {str(e)}"
+                                    db.session.commit()
                             else:
                                 error_text = await response.text()
                                 logger.error(f"AI reranking failed: {error_text}")
                                 analysis.status = 'reranking_failed'
                                 analysis.error = f"Reranking failed: {error_text}"
                                 db.session.commit()
-                    
+                                        
                     return scan_results, 200
                 else:
                     analysis.status = 'failed'
