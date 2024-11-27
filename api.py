@@ -330,7 +330,7 @@ async def trigger_repository_scan():
     async def run_scan():
         analysis = None
         try:
-            # Get GitHub token with error handling
+            # Get GitHub token
             try:
                 installation_token = git_integration.get_access_token(int(installation_id)).token
             except Exception as token_error:
@@ -355,106 +355,88 @@ async def trigger_repository_scan():
             db.session.commit()
             logger.info(f"Created analysis record with ID: {analysis.id}")
 
-            # Initialize scanner with analysis_id
-            async with SecurityScanner(config=config, db_session=db.session, analysis_id=analysis.id) as scanner:
-                try:
-                    # Run the security scan
-                    scan_results = await scanner.scan_repository(
-                        repo_url=f"https://github.com/{owner}/{repo}",
-                        installation_token=installation_token,
-                        user_id=user_id
-                    )
+            # Run the security scan
+            async with SecurityScanner(config=config, db_session=db.session) as scanner:
+                scan_results = await scanner.scan_repository(
+                    repo_url=f"https://github.com/{owner}/{repo}",
+                    installation_token=installation_token,
+                    user_id=user_id
+                )
 
-                    if scan_results.get('success'):
-                        # Get the findings and add sequential IDs
-                        findings = scan_results.get('data', {}).get('findings', [])
-                        for idx, finding in enumerate(findings, 1):
-                            finding['ID'] = idx
+                if scan_results.get('success'):
+                    # Store original scan results
+                    analysis.results = scan_results.get('data')
+                    
+                    # Get findings and add IDs
+                    findings = scan_results.get('data', {}).get('findings', [])
+                    for idx, finding in enumerate(findings, 1):
+                        finding['ID'] = idx
 
-                        # Prepare simplified data for LLM
-                        llm_data = [{
+                    # Prepare simplified data for LLM
+                    llm_data = {
+                        'findings': [{
                             "ID": finding["ID"],
                             "file": finding["file"],
                             "code_snippet": finding["code_snippet"],
                             "message": finding["message"],
                             "severity": finding["severity"]
-                        } for finding in findings]
-
-                        # Prepare data for AI reranking
-                        rerank_data = {
-                            'findings': llm_data,
-                            'metadata': {
-                                'repository': f"{owner}/{repo}",
-                                'user_id': user_id,
-                                'timestamp': datetime.utcnow().isoformat(),
-                                'scan_id': analysis.id
-                            }
+                        } for finding in findings],
+                        'metadata': {
+                            'repository': f"{owner}/{repo}",
+                            'user_id': user_id,
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'scan_id': analysis.id
                         }
+                    }
 
-                        # Send to AI reranking service
-                        AI_RERANK_URL = os.getenv('RERANK_API_URL')
-                        if not AI_RERANK_URL:
-                            raise ValueError("RERANK_API_URL not configured")
+                    # Send to AI reranking service
+                    AI_RERANK_URL = os.getenv('RERANK_API_URL')
+                    if not AI_RERANK_URL:
+                        raise ValueError("RERANK_API_URL not configured")
 
-                        async with aiohttp.ClientSession() as session:
-                            async with session.post(AI_RERANK_URL, json=rerank_data) as response:
-                                if response.status == 200:
-                                    # Get the reranked order from LLM
-                                    reranked_order = await response.json()
-                                    
-                                    # Create a map of ID to finding
-                                    findings_map = {finding['ID']: finding for finding in findings}
-                                    
-                                    # Reorder the complete findings based on LLM's order
-                                    reordered_findings = [findings_map[id] for id in reranked_order]
-                                    
-                                    # Create rerank results structure
-                                    rerank_results = {
-                                        'reranked_findings': reordered_findings,
-                                        'metadata': {
-                                            'original_order': [f['ID'] for f in findings],
-                                            'llm_order': reranked_order,
-                                            'timestamp': datetime.utcnow().isoformat()
-                                        }
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(AI_RERANK_URL, json=llm_data) as response:
+                            if response.status == 200:
+                                # Get ordered IDs from LLM
+                                reranked_ids = await response.json()
+                                
+                                # Create mapping of ID to finding
+                                findings_map = {finding['ID']: finding for finding in findings}
+                                
+                                # Reorder findings based on LLM response
+                                reordered_findings = [findings_map[id] for id in reranked_ids]
+                                
+                                # Store reranked results
+                                rerank_results = {
+                                    'reranked_findings': reordered_findings,
+                                    'metadata': {
+                                        'original_order': [f['ID'] for f in findings],
+                                        'llm_order': reranked_ids,
+                                        'timestamp': datetime.utcnow().isoformat()
                                     }
-                                    
-                                    # Update the analysis record with both results
-                                    analysis.results = scan_results.get('data')
-                                    analysis.rerank = rerank_results
-                                    analysis.status = 'completed'
-                                    db.session.commit()
-                                    logger.info(f"Updated analysis {analysis.id} with scan and rerank results")
-                                    
-                                    # Include both results in response
-                                    scan_results['data']['reranked_findings'] = rerank_results
-                                else:
-                                    error_text = await response.text()
-                                    logger.error(f"AI reranking failed: {error_text}")
-                                    analysis.status = 'reranking_failed'
-                                    analysis.error = f"Reranking failed: {error_text}"
-                                    db.session.commit()
-                                    
-                        return scan_results, 200
-                    else:
-                        # Update analysis status if scan failed
-                        analysis.status = 'failed'
-                        analysis.error = scan_results.get('error', {}).get('message', 'Scan failed')
-                        db.session.commit()
-                        return scan_results, 500
-                
-                except Exception as scan_error:
-                    logger.error(f"Scan error: {str(scan_error)}")
-                    if analysis:
-                        analysis.status = 'failed'
-                        analysis.error = str(scan_error)
-                        db.session.commit()
-                    return {
-                        'success': False,
-                        'error': {
-                            'message': str(scan_error),
-                            'code': 'SCAN_ERROR'
-                        }
-                    }, 500
+                                }
+                                
+                                # Update analysis record
+                                analysis.rerank = rerank_results
+                                analysis.status = 'completed'
+                                db.session.commit()
+                                logger.info(f"Updated analysis {analysis.id} with reranked results")
+                                
+                                # Add reranked results to response
+                                scan_results['data']['reranked_findings'] = rerank_results
+                            else:
+                                error_text = await response.text()
+                                logger.error(f"AI reranking failed: {error_text}")
+                                analysis.status = 'reranking_failed'
+                                analysis.error = f"Reranking failed: {error_text}"
+                                db.session.commit()
+                    
+                    return scan_results, 200
+                else:
+                    analysis.status = 'failed'
+                    analysis.error = scan_results.get('error', {}).get('message', 'Scan failed')
+                    db.session.commit()
+                    return scan_results, 500
 
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}")
@@ -484,115 +466,5 @@ async def trigger_repository_scan():
                 'message': 'Error in async execution',
                 'code': 'ASYNC_ERROR',
                 'details': str(e)
-            }
-        }), 500
-
-@analysis_bp.route('/<owner>/<repo>/reranked', methods=['GET'])
-def get_reranked_findings(owner: str, repo: str):
-    """Get reranked findings with filtering and pagination"""
-    try:
-        # Get query parameters
-        page = max(1, int(request.args.get('page', 1)))
-        per_page = min(100, max(1, int(request.args.get('limit', 30))))
-        severity = request.args.get('severity', '').upper()
-        category = request.args.get('category', '')
-        file_path = request.args.get('file', '')
-        
-        repo_name = f"{owner}/{repo}"
-        
-        # Get latest analysis result
-        result = AnalysisResult.query.filter_by(
-            repository_name=repo_name
-        ).order_by(
-            desc(AnalysisResult.timestamp)
-        ).first()
-        
-        if not result:
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': 'No analysis found',
-                    'code': 'ANALYSIS_NOT_FOUND'
-                }
-            }), 404
-
-        if not result.rerank:
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': 'No reranked results available',
-                    'code': 'NO_RERANK_RESULTS'
-                }
-            }), 404
-
-        # Extract reranked findings
-        findings = result.rerank.get('reranked_findings', [])
-        
-        # Apply filters
-        if severity:
-            findings = [f for f in findings if f.get('severity', '').upper() == severity]
-        if category:
-            findings = [f for f in findings if f.get('category', '').lower() == category.lower()]
-        if file_path:
-            findings = [f for f in findings if file_path in f.get('file', '')]
-        
-        # Get total count before pagination
-        total_findings = len(findings)
-        
-        # Apply pagination
-        start_idx = (page - 1) * per_page
-        end_idx = start_idx + per_page
-        paginated_findings = findings[start_idx:end_idx]
-        
-        # Get unique values for filters
-        all_severities = sorted(set(f.get('severity', '').upper() for f in findings))
-        all_categories = sorted(set(f.get('category', '').lower() for f in findings))
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'repository': {
-                    'name': repo_name,
-                    'owner': owner,
-                    'repo': repo
-                },
-                'metadata': {
-                    'analysis_id': result.id,
-                    'timestamp': result.timestamp.isoformat(),
-                    'status': result.status,
-                    'rerank_metadata': result.rerank.get('metadata', {})
-                },
-                'summary': {
-                    'total_findings': total_findings,
-                    'severity_counts': {
-                        severity: len([f for f in findings if f.get('severity', '').upper() == severity])
-                        for severity in all_severities
-                    },
-                    'category_counts': {
-                        category: len([f for f in findings if f.get('category', '').lower() == category])
-                        for category in all_categories
-                    }
-                },
-                'findings': paginated_findings,
-                'pagination': {
-                    'current_page': page,
-                    'total_pages': (total_findings + per_page - 1) // per_page,
-                    'total_items': total_findings,
-                    'per_page': per_page
-                },
-                'filters': {
-                    'available_severities': all_severities,
-                    'available_categories': all_categories,
-                }
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error getting reranked findings: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': {
-                'message': 'Internal server error',
-                'code': 'INTERNAL_ERROR'
             }
         }), 500
