@@ -396,14 +396,17 @@ async def trigger_repository_scan():
 
                     async with aiohttp.ClientSession() as session:
                         async with session.post(AI_RERANK_URL, json=llm_data) as response:
+                            # Log these 3 key pieces of information about the response
+                            response_status = response.status
+                            response_text = await response.text()
+                            
+                            logger.info(f"LLM Response Status: {response_status}")
+                            logger.info(f"LLM Raw Response: {response_text}")
+                            logger.info(f"LLM Response Type: {type(response_text)}")
+                            
                             if response.status == 200:
                                 try:
-                                    response_data = await response.json()
-                                    # If response is directly the array
-                                    reranked_ids = response_data
-                                    if isinstance(response_data, dict):
-                                        # If response is wrapped in llm_response key
-                                        reranked_ids = response_data.get('llm_response', [])
+                                    reranked_ids = await response.json()
                                     
                                     # Create mapping of ID to finding
                                     findings_map = {finding['ID']: finding for finding in findings}
@@ -430,13 +433,8 @@ async def trigger_repository_scan():
                                     # Add reranked results to response
                                     scan_results['data']['reranked_findings'] = rerank_results
                                     
-                                    # Log the response for debugging
-                                    logger.info(f"LLM Response: {response_data}")
-                                    logger.info(f"Reranked IDs: {reranked_ids}")
-                                    
                                 except Exception as e:
                                     logger.error(f"Error processing LLM response: {str(e)}")
-                                    logger.error(f"Raw response: {await response.text()}")
                                     analysis.status = 'reranking_failed'
                                     analysis.error = f"Error processing LLM response: {str(e)}"
                                     db.session.commit()
