@@ -396,17 +396,13 @@ async def trigger_repository_scan():
 
                     async with aiohttp.ClientSession() as session:
                         async with session.post(AI_RERANK_URL, json=llm_data) as response:
-                            # Log these 3 key pieces of information about the response
-                            response_status = response.status
-                            response_text = await response.text()
-                            
-                            logger.info(f"LLM Response Status: {response_status}")
-                            logger.info(f"LLM Raw Response: {response_text}")
-                            logger.info(f"LLM Response Type: {type(response_text)}")
-                            
                             if response.status == 200:
                                 try:
-                                    reranked_ids = await response.json()
+                                    response_data = await response.json()
+                                    # Get the string array from llm_response and convert it to actual array
+                                    array_string = response_data.get('llm_response', '[]')
+                                    # Convert string "[1,2,3]" to actual array [1,2,3]
+                                    reranked_ids = json.loads(array_string)
                                     
                                     # Create mapping of ID to finding
                                     findings_map = {finding['ID']: finding for finding in findings}
@@ -435,6 +431,7 @@ async def trigger_repository_scan():
                                     
                                 except Exception as e:
                                     logger.error(f"Error processing LLM response: {str(e)}")
+                                    logger.error(f"Raw response: {await response.text()}")
                                     analysis.status = 'reranking_failed'
                                     analysis.error = f"Error processing LLM response: {str(e)}"
                                     db.session.commit()
