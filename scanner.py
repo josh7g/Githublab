@@ -20,6 +20,7 @@ from collections import defaultdict
 import re
 from models import AnalysisResult
 
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -53,11 +54,10 @@ class ScanConfig:
     ])
 
 class SecurityScanner:
-    """Security scanner optimized for resource-constrained environments"""
-    
-    def __init__(self, config: ScanConfig = ScanConfig(), db_session: Optional[Session] = None):
+    def __init__(self, config: ScanConfig = ScanConfig(), db_session: Optional[Session] = None, analysis_id: Optional[int] = None):
         self.config = config
         self.db_session = db_session
+        self.analysis_id = analysis_id  # Add this
         self.temp_dir = None
         self.repo_dir = None
         self._session = None
@@ -385,21 +385,18 @@ class SecurityScanner:
                 }
             }
             
-            if self.db_session:
+            if self.db_session and self.analysis_id:
                 try:
-                    analysis = AnalysisResult(
-                        repository_name=repo_name,
-                        user_id=user_id,
-                        status='completed',
-                        results=results_data,
-                        timestamp=datetime.utcnow()
-                    )
-                    self.db_session.add(analysis)
-                    self.db_session.commit()
-                    logger.info(f"Stored analysis results in database with ID: {analysis.id}")
+                    # Update existing record instead of creating new one
+                    analysis = self.db_session.query(AnalysisResult).get(self.analysis_id)
+                    if analysis:
+                        analysis.results = results_data
+                        analysis.status = 'completed'
+                        self.db_session.commit()
+                        logger.info(f"Updated analysis results in database with ID: {analysis.id}")
                 except Exception as e:
                     self.db_session.rollback()
-                    logger.error(f"Failed to store analysis results: {str(e)}")
+                    logger.error(f"Failed to update analysis results: {str(e)}")
             
             return {
                 'success': True,
@@ -415,17 +412,14 @@ class SecurityScanner:
                 
         except Exception as e:
             logger.error(f"Scan repository error: {str(e)}")
-            if self.db_session:
+            if self.db_session and self.analysis_id:
                 try:
-                    error_analysis = AnalysisResult(
-                        repository_name=repo_url.split('github.com/')[-1].rstrip('.git'),
-                        user_id=user_id,
-                        status='error',
-                        error=str(e),
-                        timestamp=datetime.utcnow()
-                    )
-                    self.db_session.add(error_analysis)
-                    self.db_session.commit()
+                    # Update existing record with error
+                    analysis = self.db_session.query(AnalysisResult).get(self.analysis_id)
+                    if analysis:
+                        analysis.status = 'error'
+                        analysis.error = str(e)
+                        self.db_session.commit()
                 except Exception as db_e:
                     logger.error(f"Failed to store error record: {str(db_e)}")
                     self.db_session.rollback()
