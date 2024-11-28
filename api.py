@@ -139,10 +139,8 @@ def get_analysis_findings(owner: str, repo: str):
                 }
             }), 404
 
-        # Extract findings and stats from results
+        # Extract findings and use stored data directly
         findings = result.results.get('findings', [])
-        stats = result.results.get('stats', {})
-        scan_stats = stats.get('scan_stats', {})
         
         # Apply filters
         if severity:
@@ -176,17 +174,9 @@ def get_analysis_findings(owner: str, repo: str):
                     'analysis_id': result.id,
                     'timestamp': result.timestamp.isoformat(),
                     'status': result.status,
-                    'duration_seconds': stats.get('scan_duration_seconds')
+                    'duration_seconds': result.results.get('metadata', {}).get('scan_duration_seconds')
                 },
-                'summary': {
-                    'files_scanned': scan_stats.get('files_scanned', 0),
-                    'files_with_findings': scan_stats.get('files_with_findings', 0),
-                    'partially_scanned': scan_stats.get('partially_scanned', 0),
-                    'skipped_files': scan_stats.get('skipped_files', 0),
-                    'total_findings': total_findings,
-                    'severity_counts': stats.get('severity_counts', {}),
-                    'category_counts': stats.get('category_counts', {})
-                },
+                'summary': result.results.get('summary', {}),  
                 'findings': paginated_findings,
                 'pagination': {
                     'current_page': page,
