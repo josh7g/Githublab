@@ -478,34 +478,62 @@ async def trigger_repository_scan():
 @analysis_bp.route('/<owner>/<repo>/reranked', methods=['GET'])
 def get_reranked_findings(owner: str, repo: str):
     try:
-        # Get latest analysis result
-        result = AnalysisResult.query.filter_by(
-            repository_name=f"{owner}/{repo}"
-        ).order_by(
-            desc(AnalysisResult.timestamp)
-        ).first()
-        
-        if not result:
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': 'No analysis found',
-                    'code': 'ANALYSIS_NOT_FOUND'
-                }
-            }), 404
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import os
 
-        if not result.rerank:
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': 'No reranked results available',
-                    'code': 'NO_RERANK_RESULTS'
-                }
-            }), 404
+        DATABASE_URL = os.getenv('DATABASE_URL')
+        if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
-        # Just return the reranked findings array
-        return jsonify(result.rerank)
-        
+        # Create engine with SSL configuration
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                'sslmode': 'require',
+                'ssl_min_protocol_version': 'TLSv1.2'
+            },
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30
+        )
+
+        # Create a session
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        try:
+            # Get latest analysis result
+            result = session.query(AnalysisResult).filter_by(
+                repository_name=f"{owner}/{repo}"
+            ).order_by(
+                desc(AnalysisResult.timestamp)
+            ).first()
+            
+            if not result:
+                return jsonify({
+                    'success': False,
+                    'error': {
+                        'message': 'No analysis found',
+                        'code': 'ANALYSIS_NOT_FOUND'
+                    }
+                }), 404
+
+            if not result.rerank:
+                return jsonify({
+                    'success': False,
+                    'error': {
+                        'message': 'No reranked results available',
+                        'code': 'NO_RERANK_RESULTS'
+                    }
+                }), 404
+
+            # Return just the reranked findings
+            return jsonify(result.rerank)
+            
+        finally:
+            session.close()
+            
     except Exception as e:
         logger.error(f"Error getting reranked findings: {str(e)}")
         return jsonify({
