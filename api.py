@@ -480,3 +480,45 @@ async def trigger_repository_scan():
                 'details': str(e)
             }
         }), 500
+    
+
+@analysis_bp.route('/<owner>/<repo>/reranked', methods=['GET'])
+def get_reranked_findings(owner: str, repo: str):
+    try:
+        # Get latest analysis result
+        result = AnalysisResult.query.filter_by(
+            repository_name=f"{owner}/{repo}"
+        ).order_by(
+            desc(AnalysisResult.timestamp)
+        ).first()
+        
+        if not result:
+            return jsonify({
+                'success': False,
+                'error': {
+                    'message': 'No analysis found',
+                    'code': 'ANALYSIS_NOT_FOUND'
+                }
+            }), 404
+
+        if not result.rerank:
+            return jsonify({
+                'success': False,
+                'error': {
+                    'message': 'No reranked results available',
+                    'code': 'NO_RERANK_RESULTS'
+                }
+            }), 404
+
+        # Just return the reranked findings array
+        return jsonify(result.rerank)
+        
+    except Exception as e:
+        logger.error(f"Error getting reranked findings: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': {
+                'message': 'Internal server error',
+                'code': 'INTERNAL_ERROR'
+            }
+        }), 500
