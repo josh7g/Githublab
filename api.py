@@ -294,7 +294,9 @@ def get_top_vulnerabilities(user_id):
 @api.route('/scan', methods=['POST'])
 async def trigger_repository_scan():
     """Trigger a semgrep security scan for a repository and get reranking"""
-    from app import git_integration, db
+    from app import git_integration
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
     
     # Get data from POST request body
     request_data = request.get_json()
@@ -304,7 +306,7 @@ async def trigger_repository_scan():
             'error': {'message': 'Request body is required'}
         }), 400
     
-    # Get required parameters from request body
+    # Get required parameters
     owner = request_data.get('owner')
     repo = request_data.get('repo')
     installation_id = request_data.get('installation_id')
@@ -327,6 +329,25 @@ async def trigger_repository_scan():
                 'code': 'INVALID_PARAMETERS'
             }
         }), 400
+
+    # Set up database connection with SSL
+    DATABASE_URL = os.getenv('DATABASE_URL')
+    if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={
+            'sslmode': 'require',
+            'ssl_min_protocol_version': 'TLSv1.2'
+        },
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_timeout=30
+    )
+
+    Session = sessionmaker(bind=engine)
+    db_session = Session()
 
     async def run_scan():
         analysis = None
@@ -352,12 +373,12 @@ async def trigger_repository_scan():
                 user_id=user_id,
                 status='in_progress'
             )
-            db.session.add(analysis)
-            db.session.commit()
+            db_session.add(analysis)
+            db_session.commit()
             logger.info(f"Created analysis record with ID: {analysis.id}")
 
             # Run the security scan
-            async with SecurityScanner(config=config, db_session=db.session) as scanner:
+            async with SecurityScanner(config=config, db_session=db_session) as scanner:
                 scan_results = await scanner.scan_repository(
                     repo_url=f"https://github.com/{owner}/{repo}",
                     installation_token=installation_token,
@@ -398,49 +419,37 @@ async def trigger_repository_scan():
                     async with aiohttp.ClientSession() as session:
                         async with session.post(AI_RERANK_URL, json=llm_data) as response:
                             if response.status == 200:
-                                try:
-                                    response_data = await response.json()
-                                    # Get the string array from llm_response and convert it to actual array
-                                    array_string = response_data.get('llm_response', '[]')
-                                    # Convert string "[1,2,3]" to actual array [1,2,3]
-                                    reranked_ids = json.loads(array_string)
-                                    
-                                    # Create mapping of ID to finding
-                                    findings_map = {finding['ID']: finding for finding in findings}
-                                    
-                                    # Reorder findings based on LLM response
-                                    reordered_findings = [findings_map[id] for id in reranked_ids]
-                                    
-                                    # Store reranked results
-                                    rerank_results = reordered_findings
-                                    
-                                    # Update analysis record
-                                    analysis.rerank = rerank_results
-                                    analysis.status = 'completed'
-                                    db.session.commit()
-                                    logger.info(f"Updated analysis {analysis.id} with reranked results")
-                                    
-                                    # Add reranked results to response
-                                    scan_results['data']['reranked_findings'] = rerank_results
-                                    
-                                except Exception as e:
-                                    logger.error(f"Error processing LLM response: {str(e)}")
-                                    logger.error(f"Raw response: {await response.text()}")
-                                    analysis.status = 'reranking_failed'
-                                    analysis.error = f"Error processing LLM response: {str(e)}"
-                                    db.session.commit()
+                                # Get the LLM response
+                                response_data = await response.json()
+                                array_string = response_data.get('llm_response', '[]')
+                                reranked_ids = json.loads(array_string)
+                                
+                                # Create mapping of ID to finding
+                                findings_map = {finding['ID']: finding for finding in findings}
+                                
+                                # Reorder findings based on LLM response
+                                reordered_findings = [findings_map[id] for id in reranked_ids]
+                                
+                                # Store reranked results
+                                analysis.rerank = reordered_findings
+                                analysis.status = 'completed'
+                                db_session.commit()
+                                logger.info(f"Updated analysis {analysis.id} with reranked results")
+                                
+                                # Add reranked results to response
+                                scan_results['data']['reranked_findings'] = reordered_findings
                             else:
                                 error_text = await response.text()
                                 logger.error(f"AI reranking failed: {error_text}")
                                 analysis.status = 'reranking_failed'
                                 analysis.error = f"Reranking failed: {error_text}"
-                                db.session.commit()
-                                        
+                                db_session.commit()
+                    
                     return scan_results, 200
                 else:
                     analysis.status = 'failed'
                     analysis.error = scan_results.get('error', {}).get('message', 'Scan failed')
-                    db.session.commit()
+                    db_session.commit()
                     return scan_results, 500
 
         except Exception as e:
@@ -448,7 +457,7 @@ async def trigger_repository_scan():
             if analysis:
                 analysis.status = 'failed'
                 analysis.error = str(e)
-                db.session.commit()
+                db_session.commit()
             return {
                 'success': False,
                 'error': {
@@ -456,6 +465,8 @@ async def trigger_repository_scan():
                     'code': 'UNEXPECTED_ERROR'
                 }
             }, 500
+        finally:
+            db_session.close()
 
     # Run the async function
     try:
@@ -473,7 +484,6 @@ async def trigger_repository_scan():
                 'details': str(e)
             }
         }), 500
-    
 
 @analysis_bp.route('/<owner>/<repo>/reranked', methods=['GET'])
 def get_reranked_findings(owner: str, repo: str):
