@@ -412,14 +412,7 @@ async def trigger_repository_scan():
                                     reordered_findings = [findings_map[id] for id in reranked_ids]
                                     
                                     # Store reranked results
-                                    rerank_results = {
-                                        'reranked_findings': reordered_findings,
-                                        'metadata': {
-                                            'original_order': [f['ID'] for f in findings],
-                                            'llm_order': reranked_ids,
-                                            'timestamp': datetime.utcnow().isoformat()
-                                        }
-                                    }
+                                    rerank_results = reordered_findings
                                     
                                     # Update analysis record
                                     analysis.rerank = rerank_results
