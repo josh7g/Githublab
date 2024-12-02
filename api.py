@@ -285,6 +285,21 @@ def get_top_vulnerabilities(user_id):
 
 
 
+def extract_ids_from_llm_response(response_data):
+    """Extract IDs from LLM response text"""
+    try:
+        if isinstance(response_data, dict) and 'llm_response' in response_data:
+            response_text = response_data['llm_response']
+            import re
+            array_match = re.search(r'\[([\d,\s]+)\]', response_text)
+            if array_match:
+                id_string = array_match.group(1)
+                return [int(id.strip()) for id in id_string.split(',')]
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting IDs from LLM response: {str(e)}")
+        return None
+
 @api.route('/scan', methods=['POST'])
 async def trigger_repository_scan():
     """Trigger a semgrep security scan for a repository and get reranking"""
@@ -405,60 +420,41 @@ async def trigger_repository_scan():
                         }
                     }
 
-                    # Log data being sent to LLM
-                    logger.info(f"Sending data to LLM API: {json.dumps(llm_data, indent=2)}")
-
                     # Send to AI reranking service
                     AI_RERANK_URL = os.getenv('RERANK_API_URL')
                     if not AI_RERANK_URL:
                         raise ValueError("RERANK_API_URL not configured")
 
                     async with aiohttp.ClientSession() as session:
-                        # Log request to LLM
-                        logger.info(f"Making request to LLM API: {AI_RERANK_URL}")
-                        
                         async with session.post(AI_RERANK_URL, json=llm_data) as response:
-                            # Log LLM response details
-                            logger.info(f"LLM API Response Status: {response.status}")
-                            logger.info(f"LLM API Response Headers: {response.headers}")
-                            response_text = await response.text()
-                            logger.info(f"LLM API Raw Response: {response_text}")
-
                             if response.status == 200:
-                                try:
-                                    # Parse and log response
-                                    response_data = json.loads(response_text)
-                                    logger.info(f"LLM API Parsed Response: {json.dumps(response_data, indent=2)}")
-                                    
-                                    array_string = response_data.get('llm_response', '[]')
-                                    reranked_ids = json.loads(array_string)
-                                    logger.info(f"Reranked IDs: {reranked_ids}")
-                                    
-                                    # Create mapping of ID to finding
+                                response_data = await response.json()
+                                # Only log the LLM response
+                                logger.info(f"LLM Response: {response_data.get('llm_response', '')}")
+                                
+                                reranked_ids = extract_ids_from_llm_response(response_data)
+                                if reranked_ids:
                                     findings_map = {finding['ID']: finding for finding in findings}
-                                    
-                                    # Reorder findings based on LLM response
                                     reordered_findings = [findings_map[id] for id in reranked_ids]
-                                    logger.info(f"Successfully reordered {len(reordered_findings)} findings")
                                     
-                                    # Store reranked results
+                                    # Update analysis with reordered findings
                                     analysis.rerank = reordered_findings
                                     analysis.status = 'completed'
                                     db_session.commit()
-                                    logger.info(f"Updated analysis {analysis.id} with reranked results")
                                     
                                     # Add reranked results to response
                                     scan_results['data']['reranked_findings'] = reordered_findings
-                                except json.JSONDecodeError as e:
-                                    logger.error(f"Failed to parse LLM response: {str(e)}")
-                                    logger.error(f"Response that failed to parse: {response_text}")
-                                    analysis.status = 'reranking_failed'
-                                    analysis.error = f"Failed to parse LLM response: {str(e)}"
+                                else:
+                                    # Fall back to original order
+                                    logger.warning("Could not extract IDs from LLM response, using original order")
+                                    analysis.rerank = findings
+                                    analysis.status = 'completed'
                                     db_session.commit()
+                                    scan_results['data']['reranked_findings'] = findings
                             else:
-                                logger.error(f"AI reranking failed: {response_text}")
+                                logger.error(f"AI reranking failed: {await response.text()}")
                                 analysis.status = 'reranking_failed'
-                                analysis.error = f"Reranking failed: {response_text}"
+                                analysis.error = "Reranking failed"
                                 db_session.commit()
                     
                     return scan_results, 200
