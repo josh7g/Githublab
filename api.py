@@ -240,7 +240,6 @@ def get_analysis_findings(owner: str, repo: str):
 @api.route('/users/severity-counts', methods=['POST'])
 def get_user_severity_counts():
     try:
-        # Get and validate request data
         request_data = request.get_json()
         if not request_data or 'user_id' not in request_data:
             return jsonify({
@@ -249,8 +248,8 @@ def get_user_severity_counts():
             }), 400
         
         user_id = request_data['user_id']
+        logger.info(f"Processing severity counts for user_id: {user_id}")
 
-        # Set up database connection with SSL
         DATABASE_URL = os.getenv('DATABASE_URL')
         if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
             DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
@@ -270,19 +269,25 @@ def get_user_severity_counts():
         db_session = Session()
 
         try:
-            # Get the latest analysis for each repository
-            latest_analyses = {}
+            # Get all completed analyses
             all_analyses = db_session.query(AnalysisResult).filter(
                 AnalysisResult.user_id == user_id,
                 AnalysisResult.status == 'completed',
                 AnalysisResult.results.isnot(None)
             ).order_by(AnalysisResult.timestamp.desc()).all()
 
-            # Get only the latest analysis for each repository
+            logger.info(f"Found {len(all_analyses)} total analyses")
+
+            # Get latest analysis per repository
+            latest_analyses = {}
             for analysis in all_analyses:
                 repo_name = analysis.repository_name
                 if repo_name not in latest_analyses:
                     latest_analyses[repo_name] = analysis
+                    logger.info(f"Latest analysis for {repo_name}:")
+                    logger.info(f"- Timestamp: {analysis.timestamp}")
+                    logger.info(f"- Results: {analysis.results}")
+                    logger.info(f"- Summary: {analysis.results.get('summary', {})}")
 
             if not latest_analyses:
                 return jsonify({
@@ -290,44 +295,42 @@ def get_user_severity_counts():
                     'error': {'message': 'No analyses found for this user'}
                 }), 404
 
-            # Initialize counters and data structures
             repository_data = {}
             total_severity_counts = defaultdict(int)
             total_findings = 0
             latest_scan_time = None
 
-            # Process each repository's latest analysis
             for repo_name, analysis in latest_analyses.items():
                 results = analysis.results
-                if not results:
-                    continue
+                logger.info(f"\nProcessing {repo_name}:")
+                logger.info(f"Raw results: {results}")
                 
+                summary = results.get('summary', {})
+                logger.info(f"Summary data: {summary}")
+                
+                severity_counts = summary.get('severity_counts', {})
+                logger.info(f"Severity counts: {severity_counts}")
+                
+                repo_findings = summary.get('total_findings', 0)
+                logger.info(f"Total findings: {repo_findings}")
+
                 latest_scan_time = max(latest_scan_time, analysis.timestamp) if latest_scan_time else analysis.timestamp
                 
-                # Get the severity counts from the summary
-                summary = results.get('summary', {})
-                severity_counts = summary.get('severity_counts', {})
-                repo_findings = summary.get('total_findings', 0)
-                
-                # Log debug info
-                logger.info(f"Repository {repo_name} summary: {summary}")
-                
-                # Only add repositories with findings
-                if repo_findings > 0:
-                    repository_data[repo_name] = {
-                        'name': repo_name,
-                        'severity_counts': severity_counts
-                    }
+                repository_data[repo_name] = {
+                    'name': repo_name,
+                    'severity_counts': severity_counts
+                }
 
-                    # Update totals
-                    for severity, count in severity_counts.items():
-                        total_severity_counts[severity] += count
-                    total_findings += repo_findings
-                else:
-                    repository_data[repo_name] = {
-                        'name': repo_name,
-                        'severity_counts': {}
-                    }
+                # Update totals
+                for severity, count in severity_counts.items():
+                    total_severity_counts[severity] += count
+                    logger.info(f"Added {count} {severity} findings to total")
+                total_findings += repo_findings
+
+            logger.info("\nFinal totals:")
+            logger.info(f"Total findings: {total_findings}")
+            logger.info(f"Total severity counts: {dict(total_severity_counts)}")
+            logger.info(f"Repository data: {repository_data}")
 
             return jsonify({
                 'success': True,
