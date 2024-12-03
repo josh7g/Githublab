@@ -114,83 +114,106 @@ analysis_bp = Blueprint('analysis', __name__, url_prefix='/api/v1/analysis')
 @analysis_bp.route('/<owner>/<repo>/result', methods=['GET'])
 def get_analysis_findings(owner: str, repo: str):
     try:
-        # Get query parameters
-        page = max(1, int(request.args.get('page', 1)))
-        per_page = min(100, max(1, int(request.args.get('limit', 30))))
-        severity = request.args.get('severity', '').upper()
-        category = request.args.get('category', '')
-        file_path = request.args.get('file', '')
-        
-        repo_name = f"{owner}/{repo}"
-        
-        # Get latest analysis result
-        result = AnalysisResult.query.filter_by(
-            repository_name=repo_name
-        ).order_by(
-            desc(AnalysisResult.timestamp)
-        ).first()
-        
-        if not result:
-            return jsonify({
-                'success': False,
-                'error': {
-                    'message': 'No analysis found',
-                    'code': 'ANALYSIS_NOT_FOUND'
-                }
-            }), 404
+        # Set up database connection with proper SSL
+        DATABASE_URL = os.getenv('DATABASE_URL')
+        if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
-        # Extract findings and use stored data directly
-        findings = result.results.get('findings', [])
-        
-        # Apply filters
-        if severity:
-            findings = [f for f in findings if f.get('severity', '').upper() == severity]
-        if category:
-            findings = [f for f in findings if f.get('category', '').lower() == category.lower()]
-        if file_path:
-            findings = [f for f in findings if file_path in f.get('file', '')]
-        
-        # Get total count before pagination
-        total_findings = len(findings)
-        
-        # Apply pagination
-        start_idx = (page - 1) * per_page
-        end_idx = start_idx + per_page
-        paginated_findings = findings[start_idx:end_idx]
-        
-        # Get unique values for filters
-        all_severities = sorted(set(f.get('severity', '').upper() for f in findings))
-        all_categories = sorted(set(f.get('category', '').lower() for f in findings))
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'repository': {
-                    'name': repo_name,
-                    'owner': owner,
-                    'repo': repo
-                },
-                'metadata': {
-                    'analysis_id': result.id,
-                    'timestamp': result.timestamp.isoformat(),
-                    'status': result.status,
-                    'duration_seconds': result.results.get('metadata', {}).get('scan_duration_seconds')
-                },
-                'summary': result.results.get('summary', {}),  
-                'findings': paginated_findings,
-                'pagination': {
-                    'current_page': page,
-                    'total_pages': (total_findings + per_page - 1) // per_page,
-                    'total_items': total_findings,
-                    'per_page': per_page
-                },
-                'filters': {
-                    'available_severities': all_severities,
-                    'available_categories': all_categories,
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                'sslmode': 'require',
+                'ssl_min_protocol_version': 'TLSv1.2'
+            },
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30
+        )
+
+        Session = sessionmaker(bind=engine)
+        db_session = Session()
+
+        try:
+            # Get query parameters
+            page = max(1, int(request.args.get('page', 1)))
+            per_page = min(100, max(1, int(request.args.get('limit', 30))))
+            severity = request.args.get('severity', '').upper()
+            category = request.args.get('category', '')
+            file_path = request.args.get('file', '')
+            
+            repo_name = f"{owner}/{repo}"
+            
+            # Get latest analysis result
+            result = db_session.query(AnalysisResult).filter_by(
+                repository_name=repo_name
+            ).order_by(
+                desc(AnalysisResult.timestamp)
+            ).first()
+            
+            if not result:
+                return jsonify({
+                    'success': False,
+                    'error': {
+                        'message': 'No analysis found',
+                        'code': 'ANALYSIS_NOT_FOUND'
+                    }
+                }), 404
+
+            # Extract findings and use stored data directly
+            findings = result.results.get('findings', [])
+            
+            # Apply filters
+            if severity:
+                findings = [f for f in findings if f.get('severity', '').upper() == severity]
+            if category:
+                findings = [f for f in findings if f.get('category', '').lower() == category.lower()]
+            if file_path:
+                findings = [f for f in findings if file_path in f.get('file', '')]
+            
+            # Get total count before pagination
+            total_findings = len(findings)
+            
+            # Apply pagination
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+            paginated_findings = findings[start_idx:end_idx]
+            
+            # Get unique values for filters
+            all_severities = sorted(set(f.get('severity', '').upper() for f in findings))
+            all_categories = sorted(set(f.get('category', '').lower() for f in findings))
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'repository': {
+                        'name': repo_name,
+                        'owner': owner,
+                        'repo': repo
+                    },
+                    'metadata': {
+                        'analysis_id': result.id,
+                        'timestamp': result.timestamp.isoformat(),
+                        'status': result.status,
+                        'duration_seconds': result.results.get('metadata', {}).get('scan_duration_seconds')
+                    },
+                    'summary': result.results.get('summary', {}),  
+                    'findings': paginated_findings,
+                    'pagination': {
+                        'current_page': page,
+                        'total_pages': (total_findings + per_page - 1) // per_page,
+                        'total_items': total_findings,
+                        'per_page': per_page
+                    },
+                    'filters': {
+                        'available_severities': all_severities,
+                        'available_categories': all_categories,
+                    }
                 }
-            }
-        })
-        
+            })
+            
+        finally:
+            db_session.close()
+            
     except Exception as e:
         logger.error(f"Error getting findings: {str(e)}")
         return jsonify({
