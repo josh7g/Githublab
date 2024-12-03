@@ -183,7 +183,8 @@ def get_analysis_findings(owner: str, repo: str):
             all_severities = sorted(set(f.get('severity', '').upper() for f in findings))
             all_categories = sorted(set(f.get('category', '').lower() for f in findings))
             
-            # Get metadata from results
+            # Get summary and metadata
+            summary = result.results.get('summary', {})
             metadata = result.results.get('metadata', {})
             
             return jsonify({
@@ -201,13 +202,13 @@ def get_analysis_findings(owner: str, repo: str):
                         'duration_seconds': metadata.get('scan_duration_seconds')
                     },
                     'summary': {
-                        'files_scanned': metadata.get('files_scanned', 0),
-                        'files_with_findings': metadata.get('files_with_findings', 0),
-                        'skipped_files': metadata.get('skipped_files', 0),
-                        'partially_scanned': metadata.get('partially_scanned', 0),
-                        'total_findings': total_findings,
-                        'severity_counts': result.results.get('summary', {}).get('severity_counts', {}),
-                        'category_counts': result.results.get('summary', {}).get('category_counts', {})
+                        'files_scanned': summary.get('files_scanned', 0),
+                        'files_with_findings': summary.get('files_with_findings', 0),
+                        'skipped_files': summary.get('skipped_files', 0),
+                        'partially_scanned': summary.get('partially_scanned', 0),
+                        'total_findings': summary.get('total_findings', total_findings),
+                        'severity_counts': summary.get('severity_counts', {}),
+                        'category_counts': summary.get('category_counts', {})
                     },
                     'findings': paginated_findings,
                     'pagination': {
