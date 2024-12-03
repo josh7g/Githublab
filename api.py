@@ -160,7 +160,7 @@ def get_analysis_findings(owner: str, repo: str):
                     }
                 }), 404
 
-            # Extract findings and use stored data directly
+            # Get findings from the results
             findings = result.results.get('findings', [])
             
             # Apply filters
@@ -183,6 +183,9 @@ def get_analysis_findings(owner: str, repo: str):
             all_severities = sorted(set(f.get('severity', '').upper() for f in findings))
             all_categories = sorted(set(f.get('category', '').lower() for f in findings))
             
+            # Get metadata from results
+            metadata = result.results.get('metadata', {})
+            
             return jsonify({
                 'success': True,
                 'data': {
@@ -195,9 +198,17 @@ def get_analysis_findings(owner: str, repo: str):
                         'analysis_id': result.id,
                         'timestamp': result.timestamp.isoformat(),
                         'status': result.status,
-                        'duration_seconds': result.results.get('metadata', {}).get('scan_duration_seconds')
+                        'duration_seconds': metadata.get('scan_duration_seconds')
                     },
-                    'summary': result.results.get('summary', {}),  
+                    'summary': {
+                        'files_scanned': metadata.get('files_scanned', 0),
+                        'files_with_findings': metadata.get('files_with_findings', 0),
+                        'skipped_files': metadata.get('skipped_files', 0),
+                        'partially_scanned': metadata.get('partially_scanned', 0),
+                        'total_findings': total_findings,
+                        'severity_counts': result.results.get('summary', {}).get('severity_counts', {}),
+                        'category_counts': result.results.get('summary', {}).get('category_counts', {})
+                    },
                     'findings': paginated_findings,
                     'pagination': {
                         'current_page': page,
@@ -207,7 +218,7 @@ def get_analysis_findings(owner: str, repo: str):
                     },
                     'filters': {
                         'available_severities': all_severities,
-                        'available_categories': all_categories,
+                        'available_categories': all_categories
                     }
                 }
             })
