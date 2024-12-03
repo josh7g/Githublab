@@ -292,29 +292,59 @@ def get_user_severity_counts():
 
             # Initialize counters
             repository_data = {}
-            total_severity_counts = defaultdict(int)
+            total_severity_counts = {
+                'CRITICAL': 0,
+                'HIGH': 0,
+                'MEDIUM': 0,
+                'LOW': 0,
+                'ERROR': 0,
+                'WARNING': 0,
+                'INFO': 0
+            }
             total_findings = 0
             latest_scan_time = None
 
             # Process each repository's latest analysis
             for repo_name, analysis in latest_analyses.items():
-                summary = analysis.results.get('summary', {})
+                findings = analysis.results.get('findings', [])
                 latest_scan_time = max(latest_scan_time, analysis.timestamp) if latest_scan_time else analysis.timestamp
                 
-                # Use the summary data directly
-                severity_counts = summary.get('severity_counts', {})
-                repository_data[repo_name] = {
-                    'name': repo_name,
-                    'severity_counts': severity_counts
+                # Count severities for this repository
+                repo_severity_counts = {
+                    'CRITICAL': 0,
+                    'HIGH': 0,
+                    'MEDIUM': 0,
+                    'LOW': 0,
+                    'ERROR': 0,
+                    'WARNING': 0,
+                    'INFO': 0
                 }
 
-                # Update total counts
-                for severity, count in severity_counts.items():
-                    total_severity_counts[severity] += count
-                total_findings += summary.get('total_findings', 0)
+                # Count each finding
+                for finding in findings:
+                    severity = finding.get('severity', 'UNKNOWN')
+                    if severity in repo_severity_counts:
+                        repo_severity_counts[severity] += 1
+                        total_severity_counts[severity] += 1
+                        total_findings += 1
+
+                # Only include non-zero counts in repository data
+                repo_counts = {k: v for k, v in repo_severity_counts.items() if v > 0}
+                repository_data[repo_name] = {
+                    'name': repo_name,
+                    'severity_counts': repo_counts
+                }
 
                 # Log for debugging
-                logger.info(f"Repository {repo_name} summary: {summary}")
+                logger.info(f"Repository {repo_name} counts: {repo_counts}")
+                logger.info(f"Findings count for {repo_name}: {len(findings)}")
+
+            # Only include non-zero counts in total severity counts
+            total_severity_counts = {k: v for k, v in total_severity_counts.items() if v > 0}
+
+            # Log totals for debugging
+            logger.info(f"Total severity counts: {total_severity_counts}")
+            logger.info(f"Total findings: {total_findings}")
 
             return jsonify({
                 'success': True,
@@ -322,7 +352,7 @@ def get_user_severity_counts():
                     'user_id': user_id,
                     'total_findings': total_findings,
                     'total_repositories': len(repository_data),
-                    'severity_counts': dict(total_severity_counts),
+                    'severity_counts': total_severity_counts,
                     'repositories': repository_data,
                     'metadata': {
                         'last_scan': latest_scan_time.isoformat() if latest_scan_time else None,
@@ -340,7 +370,7 @@ def get_user_severity_counts():
             'success': False,
             'error': {'message': str(e)}
         }), 500
-
+    
 @api.route('/users/<user_id>/top-vulnerabilities', methods=['GET'])
 def get_top_vulnerabilities(user_id):
     try:
