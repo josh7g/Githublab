@@ -298,29 +298,23 @@ def get_user_severity_counts():
 
             # Process each repository's latest analysis
             for repo_name, analysis in latest_analyses.items():
-                findings = analysis.results.get('findings', [])
+                summary = analysis.results.get('summary', {})
                 latest_scan_time = max(latest_scan_time, analysis.timestamp) if latest_scan_time else analysis.timestamp
                 
-                # Count severities for this repository
-                repo_severity_counts = defaultdict(int)
-                for finding in findings:
-                    severity = finding.get('severity', 'UNKNOWN')
-                    repo_severity_counts[severity] += 1
-                    total_severity_counts[severity] += 1
-                    total_findings += 1
-
+                # Use the summary data directly
+                severity_counts = summary.get('severity_counts', {})
                 repository_data[repo_name] = {
                     'name': repo_name,
-                    'severity_counts': dict(repo_severity_counts)
+                    'severity_counts': severity_counts
                 }
 
-                # Log for debugging
-                logger.info(f"Repository {repo_name} counts: {dict(repo_severity_counts)}")
+                # Update total counts
+                for severity, count in severity_counts.items():
+                    total_severity_counts[severity] += count
+                total_findings += summary.get('total_findings', 0)
 
-            # Log total counts for debugging
-            logger.info(f"Total severity counts: {dict(total_severity_counts)}")
-            logger.info(f"Total findings: {total_findings}")
-            logger.info(f"Number of repositories: {len(repository_data)}")
+                # Log for debugging
+                logger.info(f"Repository {repo_name} summary: {summary}")
 
             return jsonify({
                 'success': True,
