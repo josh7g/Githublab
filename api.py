@@ -256,62 +256,85 @@ def get_user_severity_counts():
                 'error': {'message': 'user_id is required'}
             }), 400
 
-        # Query all completed analyses for this user
-        analyses = AnalysisResult.query.filter(
-            AnalysisResult.user_id == user_id,
-            AnalysisResult.status == 'completed',
-            AnalysisResult.results.isnot(None)
-        ).order_by(AnalysisResult.timestamp.desc()).all()
+        # Set up database connection with proper SSL
+        DATABASE_URL = os.getenv('DATABASE_URL')
+        if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
-        if not analyses:
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                'sslmode': 'require',
+                'ssl_min_protocol_version': 'TLSv1.2'
+            },
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30
+        )
+
+        Session = sessionmaker(bind=engine)
+        db_session = Session()
+
+        try:
+            # Query all completed analyses for this user
+            analyses = db_session.query(AnalysisResult).filter(
+                AnalysisResult.user_id == user_id,
+                AnalysisResult.status == 'completed',
+                AnalysisResult.results.isnot(None)
+            ).order_by(AnalysisResult.timestamp.desc()).all()
+
+            if not analyses:
+                return jsonify({
+                    'success': False,
+                    'error': {'message': 'No analyses found for this user'}
+                }), 404
+
+            # Initialize counters
+            total_severity_counts = defaultdict(int)
+            repository_counts = defaultdict(lambda: defaultdict(int))
+            total_repositories = set()
+            total_findings = 0
+
+            # Aggregate data
+            for analysis in analyses:
+                findings = analysis.results.get('findings', [])
+                repo_name = analysis.repository_name
+                total_repositories.add(repo_name)
+                
+                # Count severities per repository
+                repo_severity_counts = defaultdict(int)
+                for finding in findings:
+                    severity = finding.get('severity', 'UNKNOWN')
+                    total_severity_counts[severity] += 1
+                    repo_severity_counts[severity] += 1
+                    total_findings += 1
+                
+                # Store repository counts
+                repository_counts[repo_name] = dict(repo_severity_counts)
+
             return jsonify({
-                'success': False,
-                'error': {'message': 'No analyses found for this user'}
-            }), 404
-
-        # Initialize counters
-        total_severity_counts = defaultdict(int)
-        repository_counts = defaultdict(lambda: defaultdict(int))
-        total_repositories = set()
-        total_findings = 0
-
-        # Aggregate data
-        for analysis in analyses:
-            findings = analysis.results.get('findings', [])
-            repo_name = analysis.repository_name
-            total_repositories.add(repo_name)
-            
-            # Count severities per repository
-            repo_severity_counts = defaultdict(int)
-            for finding in findings:
-                severity = finding.get('severity', 'UNKNOWN')
-                total_severity_counts[severity] += 1
-                repo_severity_counts[severity] += 1
-                total_findings += 1
-            
-            # Store repository counts
-            repository_counts[repo_name] = dict(repo_severity_counts)
-
-        return jsonify({
-            'success': True,
-            'data': {
-                'user_id': user_id,
-                'total_findings': total_findings,
-                'total_repositories': len(total_repositories),
-                'severity_counts': dict(total_severity_counts),
-                'repositories': {
-                    repo: {
-                        'name': repo,
-                        'severity_counts': counts
+                'success': True,
+                'data': {
+                    'user_id': user_id,
+                    'total_findings': total_findings,
+                    'total_repositories': len(total_repositories),
+                    'severity_counts': dict(total_severity_counts),
+                    'repositories': {
+                        repo: {
+                            'name': repo,
+                            'severity_counts': counts
+                        }
+                        for repo, counts in repository_counts.items()
+                    },
+                    'metadata': {
+                        'last_scan': analyses[0].timestamp.isoformat() if analyses else None,
+                        'scans_analyzed': len(analyses)
                     }
-                    for repo, counts in repository_counts.items()
-                },
-                'metadata': {
-                    'last_scan': analyses[0].timestamp.isoformat() if analyses else None,
-                    'scans_analyzed': len(analyses)
                 }
-            }
-        })
+            })
+
+        finally:
+            db_session.close()
 
     except Exception as e:
         logger.error(f"Error getting severity counts: {str(e)}")
