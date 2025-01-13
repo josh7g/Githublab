@@ -230,6 +230,19 @@ class SecurityScanner:
                 "semgrep",
                 "scan",
                 "--config", "p/security-audit",
+                "--config", "p/secrets",
+                "--config", "p/sql-injection",
+                "--config", "p/deserialization",
+                "--config", "p/auth",
+                "--config", "p/sensitive-data",
+                "--config", "p/xml",
+                "--config", "p/encoding",
+                "--config", "p/logging",
+                "--config", "p/ldap",
+                "--config", "p/mass-assignment",
+                "--config", "p/xpath",
+                "--config", "p/owasp-top-ten",
+                "--config", "p/default",
                 "--json",
                 "--verbose",
                 "--metrics=on",
@@ -242,7 +255,7 @@ class SecurityScanner:
                 "--optimizations=all",
                 str(target_dir)
             ]
-
+            
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
