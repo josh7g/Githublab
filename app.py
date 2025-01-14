@@ -19,6 +19,10 @@ import requests
 from asgiref.wsgi import WsgiToAsgi
 from scanner import SecurityScanner, ScanConfig, scan_repository_handler
 from api import api, analysis_bp
+import time  
+
+
+
 
 # Load environment variables in development
 if os.getenv('FLASK_ENV') != 'production':
@@ -41,6 +45,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 # Configure database
 DATABASE_URL = os.getenv('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
@@ -52,90 +57,131 @@ if not DATABASE_URL:
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Add SSL configuration if using SSL
+# Enhanced SSL and connection pool configuration for Render
 if os.getenv('FLASK_ENV') == 'production':
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         'connect_args': {
-            'sslmode': 'require'
-        }
+            'sslmode': 'require',
+            'ssl_min_protocol_version': 'TLSv1.2',
+            'keepalives': 1,
+            'keepalives_idle': 30,
+            'keepalives_interval': 10,
+            'keepalives_count': 5
+        },
+        'pool_size': 5,
+        'max_overflow': 10,
+        'pool_timeout': 30,
+        'pool_recycle': 300,
+        'pool_pre_ping': True
     }
 
+
+def check_db_connection():
+    try:
+        with app.app_context():
+            # Test database connection
+            db.session.execute(text('SELECT 1'))
+            db.session.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Database connection error: {str(e)}")
+        return False
+
+# Add retry mechanism for database operations
+def execute_with_retry(operation, max_retries=3, delay=1):
+    for attempt in range(max_retries):
+        try:
+            return operation()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            logger.warning(f"Database operation failed, attempt {attempt + 1} of {max_retries}")
+            time.sleep(delay)
+            if not check_db_connection():
+                logger.info("Reconnecting to database...")
+                db.session.remove()
+
+def check_and_add_columns():
+    """Check and add required columns to the database"""
+    try:
+        # Check and add user_id column
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='analysis_results' AND column_name='user_id'
+        """))
+        column_exists = bool(result.scalar())
+        
+        if not column_exists:
+            logger.info("Adding user_id column...")
+            db.session.execute(text("""
+                ALTER TABLE analysis_results 
+                ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)
+            """))
+            db.session.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_analysis_results_user_id 
+                ON analysis_results (user_id)
+            """))
+            db.session.commit()
+
+        # Check and add rerank column
+        result = db.session.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='analysis_results' AND column_name='rerank'
+        """))
+        rerank_exists = bool(result.scalar())
+        
+        if not rerank_exists:
+            logger.info("Adding rerank column...")
+            db.session.execute(text("""
+                ALTER TABLE analysis_results 
+                ADD COLUMN IF NOT EXISTS rerank JSONB
+            """))
+            db.session.commit()
+            
+    except Exception as e:
+        logger.error(f"Error checking/adding columns: {str(e)}")
+        db.session.rollback()
+        raise
+
 # Initialize database
+with app.app_context():
+    def init_db():
+        try:
+            # Create tables if they don't exist
+            db.create_all()
+            logger.info("Database tables created successfully!")
+
+            # Test database connection
+            db.session.execute(text('SELECT 1'))
+            db.session.commit()
+            logger.info("Database connection successful")
+            
+            # Check and add columns
+            check_and_add_columns()
+            
+        except Exception as e:
+            logger.error(f"Database initialization error: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+        finally:
+            db.session.remove()
+
+    try:
+        execute_with_retry(init_db)
+    except Exception as e:
+        logger.error(f"Failed to initialize database after retries: {str(e)}")
+        raise
+
 try:
     db.init_app(app)
+    with app.app_context():
+        execute_with_retry(init_db)
     logger.info("Database initialization successful")
 except Exception as e:
     logger.error(f"Failed to initialize database: {str(e)}")
     raise
-
-# Initialize database and run migrations
-with app.app_context():
-    try:
-        # Create tables if they don't exist
-        db.create_all()
-        logger.info("Database tables created successfully!")
-
-        # Test database connection
-        db.session.execute(text('SELECT 1'))
-        db.session.commit()
-        logger.info("Database connection successful")
-        
-        # Check and add user_id column
-        try:
-            result = db.session.execute(text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='analysis_results' AND column_name='user_id'
-            """))
-            column_exists = bool(result.scalar())
-            
-            if not column_exists:
-                # Add user_id column directly
-                logger.info("Adding user_id column...")
-                db.session.execute(text("""
-                    ALTER TABLE analysis_results 
-                    ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)
-                """))
-                # Add index on user_id
-                db.session.execute(text("""
-                    CREATE INDEX IF NOT EXISTS ix_analysis_results_user_id 
-                    ON analysis_results (user_id)
-                """))
-                db.session.commit()
-                logger.info("user_id column added successfully")
-            else:
-                logger.info("user_id column already exists")
-
-            # Check and add rerank column
-            result = db.session.execute(text("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='analysis_results' AND column_name='rerank'
-            """))
-            rerank_exists = bool(result.scalar())
-            
-            if not rerank_exists:
-                # Add rerank column
-                logger.info("Adding rerank column...")
-                db.session.execute(text("""
-                    ALTER TABLE analysis_results 
-                    ADD COLUMN IF NOT EXISTS rerank JSONB
-                """))
-                db.session.commit()
-                logger.info("rerank column added successfully")
-            else:
-                logger.info("rerank column already exists")
-
-        except Exception as column_error:
-            logger.error(f"Error managing columns: {str(column_error)}")
-            db.session.rollback()
-
-    except Exception as e:
-        logger.error(f"Database initialization error: {str(e)}")
-        logger.error(traceback.format_exc())
-    finally:
-        db.session.remove()
-
 
 
 def format_private_key(key_data):

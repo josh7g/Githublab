@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from collections import defaultdict
 import re
 from models import AnalysisResult
+import time
 
 
 logging.basicConfig(
@@ -27,7 +28,23 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+class DatabaseConnection:
+    def __init__(self, max_retries=3, retry_delay=1):
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.engine = None
 
+    def execute_with_retry(self, operation):
+        """Execute database operations with retry mechanism"""
+        for attempt in range(self.max_retries):
+            try:
+                return operation()
+            except Exception as e:
+                if attempt == self.max_retries - 1:
+                    logger.error(f"Database operation failed after {self.max_retries} attempts: {str(e)}")
+                    raise
+                logger.warning(f"Database operation failed, attempt {attempt + 1} of {self.max_retries}")
+                time.sleep(self.retry_delay)
 @dataclass
 class ScanConfig:
     """Configuration for large repository scanning"""
@@ -56,8 +73,9 @@ class ScanConfig:
 class SecurityScanner:
     def __init__(self, config: ScanConfig = ScanConfig(), db_session: Optional[Session] = None, analysis_id: Optional[int] = None):
         self.config = config
+        self.db_connection = DatabaseConnection()
         self.db_session = db_session
-        self.analysis_id = analysis_id  # Add this
+        self.analysis_id = analysis_id
         self.temp_dir = None
         self.repo_dir = None
         self._session = None
@@ -72,7 +90,13 @@ class SecurityScanner:
             'memory_usage_mb': 0,
             'findings_count': 0
         }
+    def update_analysis_result(self, analysis, data):
+        def db_operation():
+            analysis.results = data
+            self.db_session.commit()
+        
 
+        return self.db_connection.execute_with_retry(db_operation)
     async def __aenter__(self):
         await self._setup()
         return self
