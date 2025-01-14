@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, request, jsonify
 import os
 import subprocess
@@ -19,15 +18,13 @@ import requests
 from asgiref.wsgi import WsgiToAsgi
 from scanner import SecurityScanner, ScanConfig, scan_repository_handler
 from api import api, analysis_bp
-import time  
-
-
-
+import time
 
 # Load environment variables in development
 if os.getenv('FLASK_ENV') != 'production':
     load_dotenv()
 
+# Initialize Flask app ONCE
 app = Flask(__name__)
 CORS(app)
 asgi_app = WsgiToAsgi(app)
@@ -45,8 +42,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# Configure database
+# Database configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
 if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
     DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
@@ -75,11 +71,12 @@ if os.getenv('FLASK_ENV') == 'production':
         'pool_pre_ping': True
     }
 
+# Initialize SQLAlchemy
+db.init_app(app)
 
 def check_db_connection():
     try:
         with app.app_context():
-            # Test database connection
             db.session.execute(text('SELECT 1'))
             db.session.commit()
             return True
@@ -87,7 +84,6 @@ def check_db_connection():
         logger.error(f"Database connection error: {str(e)}")
         return False
 
-# Add retry mechanism for database operations
 def execute_with_retry(operation, max_retries=3, delay=1):
     for attempt in range(max_retries):
         try:
@@ -102,9 +98,7 @@ def execute_with_retry(operation, max_retries=3, delay=1):
                 db.session.remove()
 
 def check_and_add_columns():
-    """Check and add required columns to the database"""
     try:
-        # Check and add user_id column
         result = db.session.execute(text("""
             SELECT column_name 
             FROM information_schema.columns 
@@ -124,7 +118,6 @@ def check_and_add_columns():
             """))
             db.session.commit()
 
-        # Check and add rerank column
         result = db.session.execute(text("""
             SELECT column_name 
             FROM information_schema.columns 
@@ -145,10 +138,10 @@ def check_and_add_columns():
         db.session.rollback()
         raise
 
-# Initialize database
-with app.app_context():
-    def init_db():
-        try:
+# Database initialization function
+def init_db():
+    try:
+        with app.app_context():
             # Create tables if they don't exist
             db.create_all()
             logger.info("Database tables created successfully!")
@@ -161,28 +154,22 @@ with app.app_context():
             # Check and add columns
             check_and_add_columns()
             
-        except Exception as e:
-            logger.error(f"Database initialization error: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise
-        finally:
-            db.session.remove()
-
-    try:
-        execute_with_retry(init_db)
     except Exception as e:
-        logger.error(f"Failed to initialize database after retries: {str(e)}")
+        logger.error(f"Database initialization error: {str(e)}")
+        logger.error(traceback.format_exc())
         raise
+    finally:
+        db.session.remove()
 
+# Initialize database with retry mechanism
 try:
-    db.init_app(app)
-    with app.app_context():
-        execute_with_retry(init_db)
+    execute_with_retry(init_db)
     logger.info("Database initialization successful")
 except Exception as e:
     logger.error(f"Failed to initialize database: {str(e)}")
     raise
 
+# Rest of your app.py code follows...
 
 def format_private_key(key_data):
     """Format the private key correctly for GitHub integration"""
