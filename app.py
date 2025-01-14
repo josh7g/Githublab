@@ -27,7 +27,7 @@ if os.getenv('FLASK_ENV') != 'production':
 # Initialize Flask app ONCE
 app = Flask(__name__)
 CORS(app)
-asgi_app = WsgiToAsgi(app)
+#asgi_app = WsgiToAsgi(app)
 app.register_blueprint(api)
 app.register_blueprint(analysis_bp)
 

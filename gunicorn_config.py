@@ -7,12 +7,12 @@ backlog = 2048
 
 # Worker configuration
 workers = 4
-worker_class = 'uvicorn.workers.UvicornWorker'  # Changed for ASGI support
+worker_class = 'sync'  # Changed from uvicorn.workers.UvicornWorker to sync
 threads = 4
 worker_connections = 1000
 
 # Timeout configuration
-timeout = 300  # Increased for long-running operations
+timeout = 300
 keepalive = 5
 
 # Logging
@@ -32,22 +32,26 @@ max_requests_jitter = 50
 reload = False
 preload_app = True
 
+# Security settings
+forwarded_allow_ips = '*'
+secure_scheme_headers = {
+    'X-FORWARDED-PROTOCOL': 'ssl',
+    'X-FORWARDED-PROTO': 'https',
+    'X-FORWARDED-SSL': 'on'
+}
+
 # Application initialization hooks
 def on_starting(server):
     """Log when server is starting"""
     server.log.info("Server is starting")
-    # Ensure the event loop is configured for async operations
-    import asyncio
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
 def post_fork(server, worker):
     """Configure worker after fork"""
     server.log.info(f"Worker spawned (pid: {worker.pid})")
-    # Ensure each worker has its own event loop
-    import asyncio
-    asyncio.set_event_loop(asyncio.new_event_loop())
 
-# Other settings remain the same...
+def worker_abort(worker):
+    """Log worker abort"""
+    worker.log.info("Worker received SIGABRT signal")
+
+# Resource cleanup
+graceful_timeout = 30
