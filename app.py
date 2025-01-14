@@ -85,9 +85,13 @@ def check_db_connection():
         return False
 
 def execute_with_retry(operation, max_retries=3, delay=1):
+    def run_with_context():
+        with app.app_context():
+            return operation()
+            
     for attempt in range(max_retries):
         try:
-            return operation()
+            return run_with_context()
         except Exception as e:
             if attempt == max_retries - 1:
                 raise
@@ -138,10 +142,10 @@ def check_and_add_columns():
         db.session.rollback()
         raise
 
-# Database initialization function
-def init_db():
+# Database initialization
+with app.app_context():
     try:
-        with app.app_context():
+        def init_db():
             # Create tables if they don't exist
             db.create_all()
             logger.info("Database tables created successfully!")
@@ -153,23 +157,24 @@ def init_db():
             
             # Check and add columns
             check_and_add_columns()
-            
+       
+        for attempt in range(3):  # 3 retries
+            try:
+                init_db()
+                logger.info("Database initialization successful")
+                break
+            except Exception as e:
+                if attempt == 2:  # Last attempt
+                    logger.error(f"Failed to initialize database after retries: {str(e)}")
+                    raise
+                logger.warning(f"Database operation failed, attempt {attempt + 1} of 3")
+                time.sleep(1)
+                
     except Exception as e:
-        logger.error(f"Database initialization error: {str(e)}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Failed to initialize database: {str(e)}")
         raise
     finally:
         db.session.remove()
-
-# Initialize database with retry mechanism
-try:
-    execute_with_retry(init_db)
-    logger.info("Database initialization successful")
-except Exception as e:
-    logger.error(f"Failed to initialize database: {str(e)}")
-    raise
-
-# Rest of your app.py code follows...
 
 def format_private_key(key_data):
     """Format the private key correctly for GitHub integration"""
