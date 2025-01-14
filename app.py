@@ -15,7 +15,7 @@ from models import db, AnalysisResult
 from sqlalchemy import or_, text
 import traceback
 import requests
-from asgiref.wsgi import WsgiToAsgi
+#from asgiref.wsgi import WsgiToAsgi
 from scanner import SecurityScanner, ScanConfig, scan_repository_handler
 from api import api, analysis_bp
 import time
