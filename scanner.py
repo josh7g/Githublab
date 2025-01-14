@@ -254,6 +254,7 @@ class SecurityScanner:
                 "semgrep",
                 "scan",
                 "--config", "p/security-audit",
+                "--config", "p/owasp-top-ten",
                 "--json",
                 "--verbose",
                 "--metrics=on",
