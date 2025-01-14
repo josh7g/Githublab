@@ -253,7 +253,7 @@ class SecurityScanner:
             cmd = [
                 "semgrep",
                 "scan",
-                "--config", "p/owasp-top-ten",
+                "--config", "p/security-audit", "p/owasp-top-ten",
                 "--json",
                 "--verbose",
                 "--metrics=on",
