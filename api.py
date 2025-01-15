@@ -236,6 +236,107 @@ def get_analysis_findings(owner: str, repo: str):
                 'code': 'INTERNAL_ERROR'
             }
         }), 500
+    
+@api.route('/scan/delete', methods=['POST'])
+def delete_scan_results():
+    """Delete scan results for a specific repository"""
+    try:
+        # Get data from POST request body
+        request_data = request.get_json()
+        if not request_data:
+            return jsonify({
+                'success': False,
+                'error': {'message': 'Request body is required'}
+            }), 400
+        
+        # Get required parameters
+        owner = request_data.get('owner')
+        repo = request_data.get('repo')
+        user_id = request_data.get('user_id')
+        
+        # Validate required parameters
+        required_params = {
+            'owner': owner,
+            'repo': repo,
+            'user_id': user_id
+        }
+        
+        missing_params = [param for param, value in required_params.items() if not value]
+        if missing_params:
+            return jsonify({
+                'success': False,
+                'error': {
+                    'message': f'Missing required parameters: {", ".join(missing_params)}',
+                    'code': 'INVALID_PARAMETERS'
+                }
+            }), 400
+
+        # Set up database connection
+        DATABASE_URL = os.getenv('DATABASE_URL')
+        if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+            DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={
+                'sslmode': 'require',
+                'ssl_min_protocol_version': 'TLSv1.2'
+            },
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=30
+        )
+
+        Session = sessionmaker(bind=engine)
+        db_session = Session()
+
+        try:
+            # Get all analyses for this repository
+            repo_name = f"{owner}/{repo}"
+            analyses = db_session.query(AnalysisResult).filter(
+                AnalysisResult.repository_name == repo_name,
+                AnalysisResult.user_id == user_id
+            ).all()
+
+            if not analyses:
+                return jsonify({
+                    'success': False,
+                    'error': {
+                        'message': 'No scan results found for this repository',
+                        'code': 'SCANS_NOT_FOUND'
+                    }
+                }), 404
+
+            # Delete all analyses
+            for analysis in analyses:
+                db_session.delete(analysis)
+            
+            db_session.commit()
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'message': f'Successfully deleted {len(analyses)} scan results for {repo_name}',
+                    'deleted_count': len(analyses),
+                    'repository': repo_name,
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+            })
+
+        finally:
+            db_session.close()
+
+    except Exception as e:
+        logger.error(f"Error deleting scan results: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': {
+                'message': 'Internal server error',
+                'code': 'INTERNAL_ERROR',
+                'details': str(e)
+            }
+        }), 500
+
 
 @api.route('/users/severity-counts', methods=['POST'])
 def get_user_severity_counts():
